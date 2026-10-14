@@ -70,28 +70,46 @@ _CRYPTO_REGEX = re.compile(
 _PATTERNS_ACCOUNT_SALE = [
     # Explicit bank account sales
     (
-        re.compile(r"\b(bank\s+accounts?|current\s+accounts?|savings\s+accounts?|payment\s+accounts?|verified\s+accounts?|merchant\s+accounts?)\b[^\n.!?]{0,60}\b(for\s+sale|available\s+for\s+sale|available\s+to\s+buy|on\s+sale|in\s+stock|available|to\s+buy)\b", re.I),
+        re.compile(
+            r"\b(?:(?:bank|current|savings|payment|verified|merchant|salary|corporate|[a-zA-Z]{3,12})\s+)?accounts?\b[^\n.!?]{0,60}\b(for\s+sale|available\s+for\s+sale|available\s+to\s+buy|on\s+sale|in\s+stock|available\s+now|to\s+buy)\b",
+            re.I,
+        ),
         "Explicit offer of financial accounts for sale or supply",
     ),
     (
-        re.compile(r"\b(buy|buying|sell|selling|purchase|order|ordering|deal\s+in|dealing\s+in|supply|supplying|providing)\b[^\n.!?]{0,60}\b(bank\s+accounts?|current\s+accounts?|savings\s+accounts?|verified\s+accounts?|payment\s+accounts?|netbanking\s+accounts?)\b", re.I),
+        re.compile(
+            r"\b(buy|buying|sell|selling|purchase|purchasing|order|ordering|deal\s+in|dealing\s+in|supply|supplying|providing)\b[^\n.!?]{0,60}\b(?:(?:bank|current|savings|verified|payment|netbanking|corporate|[a-zA-Z]{3,12})\s+)?accounts?\b",
+            re.I,
+        ),
         "Solicitation to buy, sell, or supply bank/payment accounts",
     ),
     (
-        re.compile(r"\b(accounts?\s+(with|having)\s+(online\s+banking|netbanking|internet\s+banking|login\s+credentials|full\s+kit|passbook|atm|sim|card))\b", re.I),
+        re.compile(
+            r"\b(accounts?\s+(with|having)\s+(online\s+banking|netbanking|internet\s+banking|login\s+credentials|full\s+kit|passbook|atm|sim|card))\b",
+            re.I,
+        ),
         "Account offered bundled with online banking credentials, SIM, or passbook",
     ),
     (
-        re.compile(r"\b(full\s+kit\s+(bank\s+)?accounts?|ready[\s\-]?made\s+accounts?|stealth\s+accounts?|aged\s+accounts?)\b", re.I),
+        re.compile(
+            r"\b(full\s+kit\s+(bank\s+)?accounts?|ready[\s\-]?made\s+accounts?|stealth\s+accounts?|aged\s+accounts?)\b",
+            re.I,
+        ),
         "Sale of turnkey 'full kit' or stealth financial account packages",
     ),
     # Card sales
     (
-        re.compile(r"\b(atm|debit|credit|cloned|pre[\s\-]?activated)\s*cards?\b[^\n.!?]{0,60}\b(for\s+sale|available|in\s+bulk|to\s+buy|ready\s+to\s+ship|available\s+for\s+sale)\b", re.I),
+        re.compile(
+            r"\b(atm|debit|credit|cloned|pre[\s\-]?activated)\s*cards?\b[^\n.!?]{0,60}\b(for\s+sale|available|in\s+bulk|to\s+buy|ready\s+to\s+ship|available\s+for\s+sale)\b",
+            re.I,
+        ),
         "Offer to sell or supply debit, credit, or ATM cards",
     ),
     (
-        re.compile(r"\b(buy|buying|sell|selling|purchase|order|ordering|supply|supplying)\b[^\n.!?]{0,60}\b(atm\s+cards?|debit\s+cards?|credit\s+cards?|cloned\s+cards?|card\s+dumps?|pre[\s\-]?activated\s+cards?)\b", re.I),
+        re.compile(
+            r"\b(buy|buying|sell|selling|purchase|order|ordering|supply|supplying)\b[^\n.!?]{0,60}\b(atm\s+cards?|debit\s+cards?|credit\s+cards?|cloned\s+cards?|card\s+dumps?|pre[\s\-]?activated\s+cards?)\b",
+            re.I,
+        ),
         "Solicitation to purchase or distribute payment/ATM cards",
     ),
 ]
@@ -117,6 +135,17 @@ _PATTERNS_KYC_EVASION = [
     (
         re.compile(r"\bno\s+questions\s+asked\b", re.I),
         "Claim of 'no questions asked' financial instrument provision",
+    ),
+    (
+        re.compile(r"\b(?:fully\s+|pre[\s\-]?|already\s+)?kyc\s+verified\b[^\n.!?]{0,40}\baccounts?\b", re.I),
+        "Turnkey KYC-verified financial account offered for third-party acquisition",
+    ),
+    (
+        re.compile(
+            r"\b((?:guaranteed|100%\s*guaranteed|instant)\s+(?:loan\s+)?(?:approval|sanction)\b[^\n.!?]{0,50}\b(?:no\s+(?:cibil|credit|income|document(?:ation)?)\s+checks?|without\s+(?:cibil|credit|income|verification))|(?:no\s+(?:cibil|credit|income|salary)\s+checks?|without\s+(?:cibil|credit|income\s+proof|verification))\b[^\n.!?]{0,50}\b(?:guaranteed|instant|100%|immediate)\s+(?:loan|approval|sanction))\b",
+            re.I,
+        ),
+        "Guaranteed loan approval combined with explicit bypass of credit, CIBIL, or documentation checks",
     ),
 ]
 
@@ -147,20 +176,28 @@ _PATTERNS_ACCOUNT_RENTAL = [
         "Promised periodic commission in exchange for financial account utilization",
     ),
     (
-        re.compile(r"\b(money\s+mule|cash\s*out\s+through\s+your\s+account)\b", re.I),
-        "Direct reference to money mule arrangement or cashing out through third-party accounts",
+        re.compile(r"\b(money\s+mule|cash\s*out\s+through\s+your\s+account|instant\s+cashout|cash\s*out\s+service|cashout\s+service)\b", re.I),
+        "Direct reference to money mule arrangement, illicit cashout service, or third-party fund extraction",
+    ),
+    (
+        re.compile(r"\b(need|seeking|looking\s+for|require)\b[^\n.!?]{0,40}\b(?:(?:bank|current|savings|corporate|[a-zA-Z]{3,12})\s+)?accounts?\b[^\n.!?]{0,50}\b(to\s+receive|for\s+transfers?|for\s+transactions?|for\s+hawala|for\s+use|for\s+rent|for\s+cashout|for\s+company\s+funds?)\b", re.I),
+        "Solicitation seeking third-party bank accounts for fund forwarding or transactions",
+    ),
+    (
+        re.compile(r"\b(keep\s+\d+%\s+(?:daily\s+)?commission|\d+%\s+daily\s+commission|daily\s+commission\s+for\s+receiving)\b", re.I),
+        "Commission cut promised for receiving third-party funds or account access",
     ),
 ]
 
 # Category D: Suspicious Financial Solicitation
 _PATTERNS_SUSPICIOUS_SOLICITATION = [
     (
-        re.compile(r"\b(share|send|provide|give)\s+(your\s+)?(otp|pin|cvv|netbanking\s+password|login\s+credentials|atm\s+pin)\b", re.I),
-        "Direct request for sensitive banking secrets (OTP, PIN, CVV, or password)",
+        re.compile(r"\b(share|send|provide|give|enter|submit|type|forward|tell|disclose|ask(?:ing)?\s+for)\b[^\n.!?]{0,40}\b(your\s+)?(otp|one[\s\-]?time\s+passwords?|verification\s+codes?|mpin|upi\s+pins?|atm\s+pins?|cvv\d?|netbanking\s+(?:login\s+)?passwords?|banking\s+(?:login\s+)?passwords?|login\s+credentials?|banking\s+credentials?|internet\s+banking\s+passwords?)\b", re.I),
+        "Direct request or harvesting of sensitive banking secrets (OTP, PIN, CVV, or password)",
     ),
     (
-        re.compile(r"\b(pay\s+in\s+advance|advance\s+payment|upfront\s+fee|processing\s+fee\s+in\s+advance|transfer\s+fee\s+first)\b", re.I),
-        "Demand for upfront fee or advance payment before delivering financial service",
+        re.compile(r"\b(pay\s+in\s+advance|advance\s+payment|upfront\s+fee|processing\s+fee\s+in\s+advance|transfer\s+fee\s+first|loan\s+(?:release|clearance)\s+fees?|(?:advance|upfront)\s+loan\s+(?:processing|approval|disbursement)\s+fees?|(?:pay|deposit|transfer)\s+(?:upfront|in\s+advance|advance)\b[^\n.!?]{0,40}\b(?:fee|charges?|amount|deposit)\b[^\n.!?]{0,40}\b(?:to\s+(?:release|disburse|approve|unlock|receive|get)|before\s+(?:disbursement|loan\s+release|release))|(?:advance|upfront)\s+(?:processing\s+fee|fee|payment|charges?|deposit)\s+(?:for|before)\s+(?:loan|funds?|disbursement))\b", re.I),
+        "Demand for upfront fee or advance payment before delivering financial service or loan release",
     ),
     (
         re.compile(r"\b(transfer|pay)\s+money\s+to\s+unlock\s+(your\s+)?(funds?|loan|prize|account)\b", re.I),
@@ -173,6 +210,10 @@ _PATTERNS_SUSPICIOUS_SOLICITATION = [
     (
         re.compile(r"\b(crypto|bitcoin|btc|usdt|monero|xmr)\s+(payments?\s+)?(only|accepted\s+for\s+accounts?)\b", re.I),
         "Solely cryptocurrency demanded for financial instrument transactions",
+    ),
+    (
+        re.compile(r"\b(hawala(\s+transactions?|\s+network|\s+channel|\s+money)?|undocumented\s+transfers?|black\s+money\s+transfers?)\b", re.I),
+        "Solicitation for hawala or illicit informal value transfer transactions",
     ),
 ]
 
@@ -207,6 +248,8 @@ _PATTERNS_AWARENESS_MITIGATION = [
     re.compile(r"\b(kyc\s+is\s+mandatory|full\s+kyc\s+required|kyc\s+helps\s+prevent|understanding\s+kyc|why\s+kyc\s+matters)\b", re.I),
     re.compile(r"\b(branch\s+visit|visit\s+your\s+nearest\s+branch|authorized\s+financial\s+institution|interest\s+p\.?a\.?|per\s+annum)\b", re.I),
     re.compile(r"\b(bill\s+payment|electricity\s+bill|utility\s+bill|payment\s+reminder|due\s+date|invoice\s+due)\b", re.I),
+    re.compile(r"\b(processing\s+fee\s+applicable|as\s+per\s+bank\s+(policy|terms|norms)|nominal\s+processing\s+fee|terms\s+and\s+conditions\s+apply|t&c\s+apply|interest\s+rates?\s+apply)\b", re.I),
+    re.compile(r"\b(loan\s+processing\s+fees?|interest\s+rates?|flexible\s+tenures?|calculate\s+emi|pre-?approved\s+(?:loans?|offers?)|apply\s+online|home\s+loans?|personal\s+loans?|car\s+loans?|education\s+loans?|fixed\s+deposits?|savings\s+accounts?|annual\s+percentage\s+rate|apr|eligibility\s+criteria)\b", re.I),
 ]
 
 
@@ -285,7 +328,9 @@ def _build_recommendation(risk_level: str, matched_categories: list[str]) -> str
         return f"High Priority: Strong indicators of suspicious financial solicitation or evasion ({cats_str}). Human review required."
     if risk_level == LEVEL_MEDIUM:
         return "Secondary Review: Moderate or ambiguous indicators detected. Contextual human evaluation recommended before action."
-    return "Routine / No Action: Content exhibits legitimate, educational, or low-risk characteristics. No immediate review indicated."
+    if matched_categories:
+        return "Low Risk: Minor indicators present without compounding risk. Routine monitoring."
+    return "No configured rules matched. Verify with statistical models or manual review if novel threats are suspected."
 
 
 # ── Main Public Function ──────────────────────────────────────────────
@@ -302,6 +347,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
             risk_score (int): 0 to 100
             risk_level (str): 'Low' | 'Medium' | 'High' | 'Critical'
             matched_categories (list[str]): Triggered threat categories
+            matched_rules (list[dict]): Details of triggered rules and snippets
             evidence (list[str]): Explainable matched rules and contextual explanations
             urls (list[str]): Extracted URLs
             emails (list[str]): Extracted email addresses
@@ -320,6 +366,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
             "risk_score": 0,
             "risk_level": LEVEL_LOW,
             "matched_categories": [],
+            "matched_rules": [],
             "evidence": [],
             "urls": [],
             "emails": [],
@@ -332,6 +379,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
         }
 
     matched_categories: list[str] = []
+    matched_rules: list[dict[str, Any]] = []
     evidence: list[str] = []
     raw_score = 0
 
@@ -343,6 +391,12 @@ def analyze_ad(text: str) -> dict[str, Any]:
             acct_sale_matched = True
             snippet = m.group(0).strip()
             evidence.append(f"[{CAT_ACCOUNT_CARD_SALE}] {desc}: \"{snippet}\"")
+            matched_rules.append({
+                "category": CAT_ACCOUNT_CARD_SALE,
+                "rule_name": desc,
+                "evidence": snippet,
+                "weight": 35,
+            })
             break
     if acct_sale_matched:
         matched_categories.append(CAT_ACCOUNT_CARD_SALE)
@@ -356,6 +410,12 @@ def analyze_ad(text: str) -> dict[str, Any]:
             kyc_matched = True
             snippet = m.group(0).strip()
             evidence.append(f"[{CAT_KYC_EVASION}] {desc}: \"{snippet}\"")
+            matched_rules.append({
+                "category": CAT_KYC_EVASION,
+                "rule_name": desc,
+                "evidence": snippet,
+                "weight": 30,
+            })
             break
     if kyc_matched:
         matched_categories.append(CAT_KYC_EVASION)
@@ -369,6 +429,12 @@ def analyze_ad(text: str) -> dict[str, Any]:
             rental_matched = True
             snippet = m.group(0).strip()
             evidence.append(f"[{CAT_ACCOUNT_RENTAL}] {desc}: \"{snippet}\"")
+            matched_rules.append({
+                "category": CAT_ACCOUNT_RENTAL,
+                "rule_name": desc,
+                "evidence": snippet,
+                "weight": 35,
+            })
             break
     if rental_matched:
         matched_categories.append(CAT_ACCOUNT_RENTAL)
@@ -382,6 +448,12 @@ def analyze_ad(text: str) -> dict[str, Any]:
             solicitation_matched = True
             snippet = m.group(0).strip()
             evidence.append(f"[{CAT_SUSPICIOUS_SOLICITATION}] {desc}: \"{snippet}\"")
+            matched_rules.append({
+                "category": CAT_SUSPICIOUS_SOLICITATION,
+                "rule_name": desc,
+                "evidence": snippet,
+                "weight": 20,
+            })
             break
     if solicitation_matched:
         matched_categories.append(CAT_SUSPICIOUS_SOLICITATION)
@@ -395,6 +467,12 @@ def analyze_ad(text: str) -> dict[str, Any]:
             urgency_matched = True
             snippet = m.group(0).strip()
             evidence.append(f"[{CAT_URGENCY_SECRECY}] {desc}: \"{snippet}\"")
+            matched_rules.append({
+                "category": CAT_URGENCY_SECRECY,
+                "rule_name": desc,
+                "evidence": snippet,
+                "weight": 10,
+            })
             break
     if urgency_matched:
         matched_categories.append(CAT_URGENCY_SECRECY)
@@ -427,8 +505,6 @@ def analyze_ad(text: str) -> dict[str, Any]:
     has_awareness = any(bool(h) for h in awareness_hits)
 
     if has_awareness:
-        # Check if the text is primarily educational or warning rather than an actual selling solicitation
-        # If there is no direct account selling or rental, or if the text starts with warning phrases
         matched_terms = [h.group(0).strip() for h in awareness_hits if h]
         first_term = matched_terms[0] if matched_terms else "advisory language"
 
@@ -465,6 +541,10 @@ def analyze_ad(text: str) -> dict[str, Any]:
         if urls:
             raw_score += 2
 
+    # ── State clearly if no rules matched ─────────────────────────────────
+    if not evidence:
+        evidence = ["No configured rules matched."]
+
     # ── Cap Score and Derive Risk Level ───────────────────────────────────
     final_score = int(min(max(raw_score, 0), 100))
     risk_level = _score_to_risk_level(final_score)
@@ -475,6 +555,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
         "risk_score": final_score,
         "risk_level": risk_level,
         "matched_categories": matched_categories,
+        "matched_rules": matched_rules,
         "evidence": evidence,
         "urls": urls,
         "emails": emails,
@@ -484,4 +565,175 @@ def analyze_ad(text: str) -> dict[str, Any]:
         "disclaimer": STANDARD_DISCLAIMER,
         "review_recommendation": recommendation,
         "analysis_mode": "rule_based",
+        "has_mitigation": has_awareness,
+    }
+
+
+# ── Unified Final Decision Strategy ────────────────────────────────────
+
+def compute_unified_verdict(
+    rule_result: dict[str, Any],
+    ml_result: dict[str, Any] | None = None,
+    hf_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Synthesize rule heuristics (Phase 2), TF-IDF ML baseline (Phase 3), and DistilBERT (Phase 4)
+    into a single prominent, consistent final verdict and risk score (0-100).
+
+    Verdict Tiers (Standardized):
+      - 'HIGH RISK' (Score 70-100): Confirmed violations or multi-engine consensus threat.
+      - 'MEDIUM RISK' (Score 30-69): Moderate rule indicators or engine divergence (manual review required).
+      - 'LOW RISK' (Score 0-29): Benign, educational, or standard transactional content.
+
+    Governance:
+      - Never labels an ad definitively fraudulent (decision support only).
+      - Reconciles engine divergence conservatively without contradictory messaging.
+      - Disagreements route to MEDIUM RISK (Manual Review Required).
+    """
+    rule_score = int(rule_result.get("risk_score", 0)) if rule_result else 0
+    rule_level = str(rule_result.get("risk_level", "Low")).capitalize() if rule_result else "Low"
+    rule_cats = rule_result.get("matched_categories", []) if rule_result else []
+    has_rule_threat = rule_score >= 25
+    has_mitigation = bool(rule_result and rule_result.get("has_mitigation")) or any(
+        "[Contextual Mitigation]" in str(ev) for ev in ((rule_result.get("evidence") if rule_result else []) or [])
+    )
+
+    ml_avail = bool(ml_result and ml_result.get("available", ml_result.get("risk_label") is not None))
+    ml_high = bool(ml_avail and ml_result.get("risk_label") == "High Risk")
+    ml_conf = ml_result.get("confidence") if ml_avail else None
+
+    hf_avail = bool(hf_result and hf_result.get("available", hf_result.get("risk_label") is not None))
+    hf_high = bool(hf_avail and hf_result.get("risk_label") == "High Risk")
+    hf_conf = hf_result.get("confidence") if hf_avail else None
+
+    models_available = int(ml_avail) + int(hf_avail)
+    models_high = int(ml_high) + int(hf_high)
+
+    # 1. Consensus Threat: High rule score confirmed by models, or critical overt rule violation
+    if (rule_score >= 50 and models_high >= 1) or rule_score >= 70 or (rule_score >= 35 and models_high == 2):
+        final_verdict = "HIGH RISK"
+        final_score = max(rule_score, 75 if models_high >= 1 else rule_score)
+        badge_color = "#ef4444"
+        consensus_status = "Consensus Threat"
+        if models_high >= 1:
+            explanation = (
+                f"Strong suspicious indicators detected across {len(rule_cats)} heuristic "
+                f"category{'s' if len(rule_cats) != 1 else ''} and confirmed by machine learning models."
+            )
+        else:
+            explanation = f"Severe suspicious financial indicators detected by heuristic rules ({', '.join(rule_cats[:2])})."
+        recommendation = "Priority Action: Immediate human review mandated. Preserve all extracted payment, phone, and URL identifiers."
+        investigation_status = "Escalated"
+        review_required = True
+
+    # 2. Rule Threat with Model Divergence: Rules fired but models predicted Safe
+    elif has_rule_threat and models_high == 0:
+        if rule_score >= 50:
+            final_verdict = "HIGH RISK"
+            final_score = rule_score
+            badge_color = "#f97316"
+            consensus_status = "Rule Violation (Model Divergence)"
+            explanation = (
+                "High-risk patterns detected by heuristic rules. Statistical models diverged, "
+                "indicating novel criminal phrasing outside training templates."
+            )
+            recommendation = "Priority Review: Evaluate triggered heuristic evidence and verified matched phrases."
+            investigation_status = "Open"
+            review_required = True
+        else:
+            final_verdict = "MEDIUM RISK"
+            final_score = max(rule_score, 35)
+            badge_color = "#eab308"
+            consensus_status = "Moderate Rule Indicators"
+            explanation = (
+                "Moderate suspicious indicators detected by heuristic rules. "
+                "Contextual human review recommended before escalation."
+            )
+            recommendation = "Secondary Review: Evaluate context to confirm whether content is an evasive financial solicitation."
+            investigation_status = "Reviewing"
+            review_required = True
+
+    # 3. Rule indicators with partial model confirmation: never downgrade to LOW RISK.
+    # A rule score >=25 means a configured threat pattern matched. If only one
+    # model is high (or the score is below the high-risk consensus threshold),
+    # preserve a MEDIUM RISK result and require human review.
+    elif has_rule_threat and models_high >= 1:
+        final_verdict = "MEDIUM RISK"
+        final_score = max(40, rule_score)
+        badge_color = "#eab308"
+        consensus_status = "Rule Indicators + Model Alert (Manual Review Required)"
+        model_names = []
+        if ml_high:
+            model_names.append("TF-IDF ML")
+        if hf_high:
+            model_names.append("DistilBERT")
+        models_str = " & ".join(model_names)
+        explanation = (
+            f"Heuristic rules detected suspicious financial indicators and {models_str} flagged the content, "
+            "but the evidence does not meet the configured HIGH RISK consensus threshold. Human review is required."
+        )
+        recommendation = "Manual Review Required: Evaluate matched rule evidence and model alerts before taking action."
+        investigation_status = "Reviewing"
+        review_required = True
+
+    # 4. Model Alert with No Rules Matched: Ambiguity / Divergence (Conservative Manual Review)
+    elif not has_rule_threat and models_high >= 1:
+        if has_mitigation and rule_score == 0 and not ml_high and models_high == 1:
+            final_verdict = "LOW RISK"
+            final_score = 0
+            badge_color = "#22c55e"
+            consensus_status = "Mitigated Legitimate Content"
+            explanation = (
+                "Verified legitimate financial institution disclosures and standard product terms detected. "
+                "Single-model statistical divergence is overridden as benign."
+            )
+            recommendation = "Routine: Verified legitimate banking or financial disclosure. No action required."
+            investigation_status = "Closed"
+            review_required = False
+        else:
+            final_verdict = "MEDIUM RISK"
+            # Deterministic combination: routed to 50 (if both models flag) or 40 (if 1 model flags)
+            final_score = 50 if models_high >= 2 else 40
+            badge_color = "#eab308"
+            consensus_status = "Model Alert (Manual Review Required)"
+            model_names = []
+            if ml_high:
+                model_names.append("TF-IDF ML")
+            if hf_high:
+                model_names.append("DistilBERT")
+            models_str = " & ".join(model_names)
+            explanation = (
+                f"Statistical classifier ({models_str}) flagged suspicious vocabulary patterns, "
+                f"but no configured heuristic rules matched. Manual review is required to verify legitimacy."
+            )
+            recommendation = "Manual Review Required: Content flagged by statistical classifier but not matched by explicit heuristic rules. Verify context before taking action."
+            investigation_status = "Reviewing"
+            review_required = True
+
+    # 4. Consensus Low Risk / Benign: Neither rules nor models flagged
+    else:
+        final_verdict = "LOW RISK"
+        final_score = min(rule_score, 24)
+        badge_color = "#22c55e"
+        consensus_status = "Consensus Benign / Safe"
+        explanation = "No suspicious financial solicitation, account trading, or KYC evasion patterns were detected."
+        recommendation = "Routine: Content displays standard transaction or educational language. No investigative escalation required."
+        investigation_status = "Closed"
+        review_required = False
+
+    return {
+        "final_verdict": final_verdict,
+        "final_score": int(min(max(final_score, 0), 100)),
+        "explanation": explanation,
+        "recommendation": recommendation,
+        "investigation_status": investigation_status,
+        "review_required": review_required,
+        "badge_color": badge_color,
+        "consensus_status": consensus_status,
+        "rule_score": rule_score,
+        "rule_level": rule_level,
+        "ml_label": ml_result.get("risk_label") if ml_avail else None,
+        "ml_confidence": ml_conf,
+        "hf_label": hf_result.get("risk_label") if hf_avail else None,
+        "hf_confidence": hf_conf,
     }

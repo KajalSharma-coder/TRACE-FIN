@@ -10,7 +10,7 @@ import streamlit as st
 import pandas as pd
 
 from config import APP_NAME, CASE_STATUSES, STANDARDIZED_RISK_TIERS, COLORS
-from src.database import init_db, search_records, get_record
+from src.database import init_db, search_records, get_record, _deserialize_list
 from src.sample_data import seed_demo_data
 from src.ui_components import (
     inject_global_css, render_sidebar, render_demo_banner,
@@ -87,11 +87,11 @@ if records:
             "Risk Level": r["risk_level"],
             "ML Pred": ml_display,
             "Status": r["investigation_status"],
-            "Matched Categories": ", ".join(r.get("matched_categories", [])) or "None",
-            "URLs": len(r.get("urls", [])),
-            "Emails": len(r.get("emails", [])),
-            "Phones": len(r.get("phone_numbers", [])),
-            "Payment IDs": len(r.get("payment_identifiers", [])),
+            "Matched Categories": ", ".join(_deserialize_list(r.get("matched_categories", []))) or "None",
+            "URLs": len(_deserialize_list(r.get("urls", []))),
+            "Emails": len(_deserialize_list(r.get("emails", []))),
+            "Phones": len(_deserialize_list(r.get("phone_numbers", []))),
+            "Payment IDs": len(_deserialize_list(r.get("payment_identifiers", []))),
             "Submitted": r["submitted_at"][:16].replace("T", " "),
             "Demo Record": "Yes" if r.get("is_synthetic") else "No",
         })
@@ -122,11 +122,11 @@ if records:
             "ML Confidence": r.get("ml_confidence", ""),
             "Review Required": "Yes" if r.get("review_required") else "No",
             "Review Recommendation": r.get("review_recommendation", ""),
-            "Matched Categories": "; ".join(r.get("matched_categories", [])),
-            "Extracted URLs": "; ".join(r.get("urls", [])),
-            "Extracted Emails": "; ".join(r.get("emails", [])),
-            "Extracted Phone Numbers": "; ".join(r.get("phone_numbers", [])),
-            "Extracted Payment IDs": "; ".join(r.get("payment_identifiers", [])),
+            "Matched Categories": "; ".join(_deserialize_list(r.get("matched_categories", []))),
+            "Extracted URLs": "; ".join(_deserialize_list(r.get("urls", []))),
+            "Extracted Emails": "; ".join(_deserialize_list(r.get("emails", []))),
+            "Extracted Phone Numbers": "; ".join(_deserialize_list(r.get("phone_numbers", []))),
+            "Extracted Payment IDs": "; ".join(_deserialize_list(r.get("payment_identifiers", []))),
             "Investigation Status": r["investigation_status"],
             "Analysis Mode": r.get("analysis_mode", "rule_based"),
             "Is Synthetic": "Yes" if r.get("is_synthetic") else "No",

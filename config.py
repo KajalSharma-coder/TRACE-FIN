@@ -15,6 +15,8 @@ MODEL_PATH = MODELS_DIR / "financial_ad_classifier.joblib"
 METRICS_PATH = MODELS_DIR / "model_metrics.json"
 DATASET_PATH = DATA_DIR / "back.dataset.csv"
 SPAM_DATASET_PATH = DATA_DIR / "cleaned_spam_dataset.csv"
+HF_MODEL_DIR = MODELS_DIR / "hf_financial_ad_classifier"
+HF_METRICS_PATH = HF_MODEL_DIR / "metadata.json"
 
 # Ensure directories exist at import time
 DATA_DIR.mkdir(exist_ok=True)
@@ -24,7 +26,7 @@ MODELS_DIR.mkdir(exist_ok=True)
 APP_NAME = "TRACE//FIN"
 APP_TAGLINE = "Detect signals. Connect evidence. Prioritize investigations."
 APP_CATEGORY = "Financial Threat Intelligence"
-APP_VERSION = "0.3.0-phase3"
+APP_VERSION = "0.5.0-phase5"
 
 # ── Standardized Risk Levels (Phase 2) ─────────────────────────────────
 # Engineering thresholds:
@@ -43,6 +45,9 @@ RISK_LEVELS["MEDIUM"]   = RISK_LEVELS["Medium"]
 RISK_LEVELS["LOW"]      = RISK_LEVELS["Low"]
 RISK_LEVELS["MINIMAL"]  = RISK_LEVELS["Low"]
 RISK_LEVELS["Minimal"]  = RISK_LEVELS["Low"]
+RISK_LEVELS["HIGH RISK"]   = RISK_LEVELS["High"]
+RISK_LEVELS["MEDIUM RISK"] = RISK_LEVELS["Medium"]
+RISK_LEVELS["LOW RISK"]    = RISK_LEVELS["Low"]
 
 # Standard ordered list of risk tiers (highest to lowest)
 STANDARDIZED_RISK_TIERS = ["Critical", "High", "Medium", "Low"]

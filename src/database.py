@@ -28,20 +28,56 @@ def _serialize(value: Any) -> str:
     """Serialize lists/dicts to JSON text for storage."""
     if value is None:
         return "[]"
-    if isinstance(value, (list, dict)):
+    if isinstance(value, str):
+        v = value.strip()
+        if not v or v == "[]":
+            return "[]"
+        if v.startswith("[") and v.endswith("]"):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return json.dumps(parsed)
+            except Exception:
+                pass
+        return json.dumps([v])
+    if isinstance(value, (list, tuple, set)):
+        clean_list = [str(item).strip() for item in value if str(item).strip()]
+        # Guard against saving list of single characters from accidental string iteration
+        if all(len(c) == 1 for c in clean_list) and len(clean_list) > 3:
+            return json.dumps(["".join(clean_list)])
+        return json.dumps(clean_list)
+    if isinstance(value, dict):
         return json.dumps(value)
-    return str(value)
+    return json.dumps([str(value)])
 
 
-def _deserialize_list(value: str | None) -> list:
+def _deserialize_list(value: Any) -> list:
     """Deserialize a JSON text column back to a Python list."""
     if not value:
         return []
-    try:
-        result = json.loads(value)
-        return result if isinstance(result, list) else [result]
-    except (json.JSONDecodeError, TypeError):
+    if isinstance(value, (list, tuple, set)):
+        items = [str(x).strip() for x in value if str(x).strip()]
+        if all(len(c) == 1 for c in items) and len(items) > 3:
+            return ["".join(items)]
+        return items
+    if not isinstance(value, str):
+        return [str(value)]
+
+    clean = value.strip()
+    if not clean or clean == "[]":
         return []
+
+    try:
+        result = json.loads(clean)
+        if isinstance(result, list):
+            items = [str(item).strip() for item in result if str(item).strip()]
+            if all(len(c) == 1 for c in items) and len(items) > 3:
+                return ["".join(items)]
+            return items
+        s = str(result).strip()
+        return [s] if s else []
+    except (json.JSONDecodeError, TypeError):
+        return [clean]
 
 
 def _deserialize_evidence(value: str | None) -> list | dict:
@@ -62,11 +98,11 @@ def _normalize_risk_level(raw: str | None) -> str:
     if not raw:
         return "Low"
     s = str(raw).strip().upper()
-    if s in ("MINIMAL", "LOW"):
+    if s in ("MINIMAL", "LOW", "LOW RISK"):
         return "Low"
-    if s == "MEDIUM":
+    if s in ("MEDIUM", "MEDIUM RISK", "MODERATE"):
         return "Medium"
-    if s == "HIGH":
+    if s in ("HIGH", "HIGH RISK"):
         return "High"
     if s == "CRITICAL":
         return "Critical"
@@ -91,6 +127,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     d.setdefault("ml_confidence", None)
     d.setdefault("ml_high_risk_score", None)
     d.setdefault("ml_model_version", None)
+    d.setdefault("hf_prediction", None)
+    d.setdefault("hf_confidence", None)
+    d.setdefault("hf_model_version", None)
     return d
 
 
@@ -117,7 +156,10 @@ CREATE TABLE IF NOT EXISTS advertisements (
     ml_prediction          TEXT DEFAULT NULL,
     ml_confidence          REAL DEFAULT NULL,
     ml_high_risk_score     REAL DEFAULT NULL,
-    ml_model_version       TEXT DEFAULT NULL
+    ml_model_version       TEXT DEFAULT NULL,
+    hf_prediction          TEXT DEFAULT NULL,
+    hf_confidence          REAL DEFAULT NULL,
+    hf_model_version       TEXT DEFAULT NULL
 );
 """
 
@@ -160,6 +202,15 @@ def init_db() -> None:
             if ml_col not in existing_cols:
                 conn.execute(f"ALTER TABLE advertisements ADD COLUMN {ml_col} {col_type}")
 
+        # Phase 4 HF fields migration
+        for hf_col, col_type in [
+            ("hf_prediction", "TEXT DEFAULT NULL"),
+            ("hf_confidence", "REAL DEFAULT NULL"),
+            ("hf_model_version", "TEXT DEFAULT NULL"),
+        ]:
+            if hf_col not in existing_cols:
+                conn.execute(f"ALTER TABLE advertisements ADD COLUMN {hf_col} {col_type}")
+
         # Migrate legacy risk level labels to standardized title case
         conn.execute("UPDATE advertisements SET risk_level = 'Low' WHERE risk_level IN ('MINIMAL', 'Minimal', 'LOW', 'low')")
         conn.execute("UPDATE advertisements SET risk_level = 'Medium' WHERE risk_level IN ('MEDIUM', 'medium')")
@@ -194,8 +245,9 @@ def insert_record(record: dict) -> str:
                 urls, emails, phone_numbers, payment_identifiers,
                 review_required, review_recommendation,
                 investigation_status, is_synthetic,
-                ml_prediction, ml_confidence, ml_high_risk_score, ml_model_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ml_prediction, ml_confidence, ml_high_risk_score, ml_model_version,
+                hf_prediction, hf_confidence, hf_model_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -218,6 +270,9 @@ def insert_record(record: dict) -> str:
                 float(record["ml_confidence"]) if record.get("ml_confidence") is not None else None,
                 float(record["ml_high_risk_score"]) if record.get("ml_high_risk_score") is not None else None,
                 record.get("ml_model_version"),
+                record.get("hf_prediction"),
+                float(record["hf_confidence"]) if record.get("hf_confidence") is not None else None,
+                record.get("hf_model_version"),
             ),
         )
         conn.commit()

@@ -179,6 +179,8 @@ def render_sidebar() -> None:
         st.page_link("pages/1_Analyze_Advertisement.py", label="🔍 Analyze Advertisement")
         st.page_link("pages/2_Investigation_Cases.py", label="📋 Investigation Cases")
         st.page_link("pages/3_Data_Explorer.py", label="🗂️ Data Explorer")
+        st.page_link("pages/4_Image_Analysis.py", label="🖼️ Image Analysis (OCR)")
+        st.page_link("pages/5_Batch_CSV_Analysis.py", label="📑 Batch CSV Analysis")
 
         st.markdown("---")
 
@@ -188,7 +190,7 @@ def render_sidebar() -> None:
             f"""
             <div style="font-size: 0.8rem; color: {COLORS['text_secondary']}; line-height: 1.6; background: {COLORS['bg_card']}; padding: 0.75rem; border-radius: 6px; border: 1px solid {COLORS['border']};">
                 <div><span style="color: {COLORS['success']};">●</span> <strong>Status:</strong> Operational</div>
-                <div><strong>Engine:</strong> Rule-Based Detector (Phase 2)</div>
+                <div><strong>Engine:</strong> Rule + TF-IDF + DistilBERT</div>
                 <div><strong>Storage:</strong> SQLite WAL (Persistent)</div>
                 <div><strong>Environment:</strong> Local / Sandbox</div>
             </div>
@@ -269,6 +271,37 @@ def render_ml_badge(ml_prediction: str | None, confidence: float | None = None) 
         f'<span class="badge" style="background: {bg}; '
         f'color: {color}; border: 1px solid {border}; font-weight: 600;">'
         f'ML: {pred}{conf_text}</span>'
+    )
+
+
+def render_hf_badge(hf_prediction: str | None, confidence: float | None = None) -> str:
+    """Return HTML for a Hugging Face DistilBERT classification badge with confidence."""
+    if not hf_prediction:
+        return (
+            '<span class="badge" style="background: rgba(100, 116, 139, 0.2); '
+            'color: #94a3b8; border: 1px solid #475569;">'
+            'DistilBERT: Unscored</span>'
+        )
+
+    pred = str(hf_prediction).strip()
+    if pred == "High Risk":
+        color = "#ef4444"
+        bg = "rgba(239, 68, 68, 0.2)"
+        border = "rgba(239, 68, 68, 0.4)"
+    elif pred == "Safe":
+        color = "#22c55e"
+        bg = "rgba(34, 197, 94, 0.2)"
+        border = "rgba(34, 197, 94, 0.4)"
+    else:
+        color = "#a855f7"
+        bg = "rgba(168, 85, 247, 0.2)"
+        border = "rgba(168, 85, 247, 0.4)"
+
+    conf_text = f" ({confidence * 100:.1f}%)" if confidence is not None else ""
+    return (
+        f'<span class="badge" style="background: {bg}; '
+        f'color: {color}; border: 1px solid {border}; font-weight: 600;">'
+        f'DistilBERT: {pred}{conf_text}</span>'
     )
 
 
@@ -368,7 +401,7 @@ def render_record_detail(record: dict) -> None:
                 unsafe_allow_html=True)
 
     # Top-level indicators
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.markdown("**Rule Risk Score**")
         score_val = record.get("risk_score", 0)
@@ -379,9 +412,12 @@ def render_record_detail(record: dict) -> None:
         st.markdown("**Rule Risk Level**")
         st.markdown(render_risk_badge(record.get("risk_level", "Low")), unsafe_allow_html=True)
     with col3:
-        st.markdown("**ML Prediction**")
+        st.markdown("**TF-IDF ML**")
         st.markdown(render_ml_badge(record.get("ml_prediction"), record.get("ml_confidence")), unsafe_allow_html=True)
     with col4:
+        st.markdown("**DistilBERT**")
+        st.markdown(render_hf_badge(record.get("hf_prediction"), record.get("hf_confidence")), unsafe_allow_html=True)
+    with col5:
         st.markdown("**Investigation Status**")
         st.markdown(render_status_badge(record.get("investigation_status", "Open")),
                     unsafe_allow_html=True)
@@ -450,10 +486,9 @@ def render_record_detail(record: dict) -> None:
         else:
             st.write("None detected (Clean/Legitimate)")
 
-    # Evidence details: supports both Phase 2 list format and legacy Phase 1 dict format
     evidence = record.get("evidence", [])
+    st.markdown("**Explainable Evidence & Rule Matches**")
     if evidence:
-        st.markdown("**Explainable Evidence & Rule Matches**")
         if isinstance(evidence, list):
             for item in evidence:
                 st.markdown(f"• {item}")
@@ -462,6 +497,8 @@ def render_record_detail(record: dict) -> None:
                 st.markdown(f"*{cat_name}:*")
                 for item in items:
                     st.write(f"  — `{item}`")
+    else:
+        st.info("No configured rules matched.")
 
     # Extracted indicators (4 columns: URLs, Emails, Phones, Payment IDs)
     st.markdown('<div class="section-header">Extracted Contact & Payment Indicators</div>',
@@ -507,20 +544,27 @@ def render_record_detail(record: dict) -> None:
     # Capabilities Roadmap
     st.markdown('<div class="section-header">Advanced Engine Capabilities & Roadmap</div>',
                 unsafe_allow_html=True)
-    f_col1, f_col2, f_col3 = st.columns(3)
+    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
     with f_col1:
-        st.markdown("**ML Text Classifier (Phase 3)**")
+        st.markdown("**TF-IDF Classifier (Phase 3)**")
         if record.get("ml_prediction"):
             ver = record.get("ml_model_version") or "v1.0"
             st.caption(f"✓ **Active** ({ver})")
         else:
             st.caption("⚡ Baseline Trained (Available)")
     with f_col2:
-        st.markdown("**OCR / Image Text (Phase 4)**")
-        st.caption("⏳ *Scheduled for Phase 4*")
+        st.markdown("**DistilBERT (Phase 4)**")
+        if record.get("hf_prediction"):
+            hver = record.get("hf_model_version") or "distilbert-v1.0"
+            st.caption(f"✓ **Active** ({hver})")
+        else:
+            st.caption("⚡ Transformer Ready")
     with f_col3:
-        st.markdown("**Network / Lead Graph (Phase 4)**")
-        st.caption("⏳ *Scheduled for Phase 4*")
+        st.markdown("**OCR Image Analysis (Phase 4)**")
+        st.caption("✓ **Active** (Tesseract 5.x)")
+    with f_col4:
+        st.markdown("**Batch CSV Analysis (Phase 4)**")
+        st.caption("✓ **Active** (Formula-Safe)")
 
     if record.get("is_synthetic"):
         st.info("ℹ️ Synthetic Demonstration Record — Fictional advertisement for workflow testing.")
