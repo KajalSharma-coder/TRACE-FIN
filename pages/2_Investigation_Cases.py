@@ -84,13 +84,17 @@ if records:
     # Summary table
     display_data = []
     for r in records:
+        ml_pred = r.get("ml_prediction")
+        conf = r.get("ml_confidence")
+        ml_display = f"{ml_pred} ({conf*100:.0f}%)" if ml_pred and conf else (ml_pred or "—")
         display_data.append({
             "Record ID": r["record_id"],
-            "Text Preview": (r["ad_text"][:75] + "…") if len(r["ad_text"]) > 75 else r["ad_text"],
+            "Text Preview": (r["ad_text"][:65] + "…") if len(r["ad_text"]) > 65 else r["ad_text"],
             "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
+            "ML Pred": ml_display,
             "Status": r["investigation_status"],
-            "Review Rec": (r.get("review_recommendation") or "")[:45] + "…",
+            "Review Rec": (r.get("review_recommendation") or "")[:35] + "…",
             "Submitted": r["submitted_at"][:16].replace("T", " "),
         })
 

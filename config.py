@@ -9,16 +9,22 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 ASSETS_DIR = PROJECT_ROOT / "assets"
+MODELS_DIR = PROJECT_ROOT / "models"
 DB_PATH = DATA_DIR / "tracefin.db"
+MODEL_PATH = MODELS_DIR / "financial_ad_classifier.joblib"
+METRICS_PATH = MODELS_DIR / "model_metrics.json"
+DATASET_PATH = DATA_DIR / "back.dataset.csv"
+SPAM_DATASET_PATH = DATA_DIR / "cleaned_spam_dataset.csv"
 
-# Ensure data directory exists at import time
+# Ensure directories exist at import time
 DATA_DIR.mkdir(exist_ok=True)
+MODELS_DIR.mkdir(exist_ok=True)
 
 # ── Product Identity ───────────────────────────────────────────────────
 APP_NAME = "TRACE//FIN"
 APP_TAGLINE = "Detect signals. Connect evidence. Prioritize investigations."
 APP_CATEGORY = "Financial Threat Intelligence"
-APP_VERSION = "0.2.0-phase2"
+APP_VERSION = "0.3.0-phase3"
 
 # ── Standardized Risk Levels (Phase 2) ─────────────────────────────────
 # Engineering thresholds:

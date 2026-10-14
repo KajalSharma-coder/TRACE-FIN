@@ -34,10 +34,11 @@ data/*.db-shm
 # OS
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # Streamlit
 .streamlit/secrets.toml
 
 # Exports / generated artifacts
-*.csv
 exports/
+exports/*.csv

@@ -95,15 +95,18 @@ def seed_demo_data() -> int:
     seeded = 0
     base_time = datetime.now(timezone.utc) - timedelta(days=5)
 
+    from src.ml_model import predict_ad_ml
+
     for i, sample in enumerate(_SAMPLES):
-        # Analyze with the Phase 2 detector
+        # Analyze with both Phase 2 detector and Phase 3 ML
         result = analyze_ad(sample["ad_text"])
+        ml_res = predict_ad_ml(sample["ad_text"])
 
         record = {
             "record_id": generate_record_id(),
             "ad_text": sample["ad_text"],
             "submitted_at": (base_time + timedelta(days=i, hours=i * 2)).isoformat(),
-            "analysis_mode": "rule_based",
+            "analysis_mode": "dual_engine" if ml_res.get("available") else "rule_based",
             "risk_score": result["risk_score"],
             "risk_level": result["risk_level"],
             "matched_categories": result["matched_categories"],
@@ -116,6 +119,10 @@ def seed_demo_data() -> int:
             "review_recommendation": result.get("review_recommendation", "Review required"),
             "investigation_status": "Open",
             "is_synthetic": True,
+            "ml_prediction": ml_res.get("risk_label"),
+            "ml_confidence": ml_res.get("confidence"),
+            "ml_high_risk_score": ml_res.get("high_risk_score"),
+            "ml_model_version": ml_res.get("model_version"),
         }
 
         insert_record(record)

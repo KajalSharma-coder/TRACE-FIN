@@ -1,0 +1,153 @@
+{
+  "model_version": "tfidf-logreg-v1.0",
+  "algorithm": "TF-IDF (1,2-grams) + LogisticRegression",
+  "random_state": 42,
+  "dataset_path": "/home/montylr2722l/Projects/trace-fin/data/back.dataset.csv",
+  "total_samples": 500,
+  "train_samples": 400,
+  "test_samples": 100,
+  "class_distribution": {
+    "total": {
+      "High Risk": 253,
+      "Safe": 247
+    },
+    "train": {
+      "High Risk": 202,
+      "Safe": 198
+    },
+    "test": {
+      "High Risk": 51,
+      "Safe": 49
+    }
+  },
+  "accuracy": 1.0,
+  "confusion_matrix": {
+    "true_negatives_safe": 49,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "true_positives_high_risk": 51
+  },
+  "classification_report": {
+    "Safe": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 49.0
+    },
+    "High Risk": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 51.0
+    },
+    "macro_avg_f1": 1.0
+  },
+  "top_features": {
+    "high_risk_signals": [
+      {
+        "feature": "account rental_amount",
+        "weight": 1.3526
+      },
+      {
+        "feature": "bank account",
+        "weight": 1.3526
+      },
+      {
+        "feature": "send",
+        "weight": 1.3526
+      },
+      {
+        "feature": "send details",
+        "weight": 1.3526
+      },
+      {
+        "feature": "rental_amount",
+        "weight": 1.3526
+      },
+      {
+        "feature": "rental_amount send",
+        "weight": 1.3526
+      },
+      {
+        "feature": "rent",
+        "weight": 1.3526
+      },
+      {
+        "feature": "rent bank",
+        "weight": 1.3526
+      },
+      {
+        "feature": "transaction advance",
+        "weight": 1.1136
+      },
+      {
+        "feature": "transaction",
+        "weight": 1.1136
+      },
+      {
+        "feature": "advance payment",
+        "weight": 1.1136
+      },
+      {
+        "feature": "hawala",
+        "weight": 1.1136
+      }
+    ],
+    "safe_signals": [
+      {
+        "feature": "refund",
+        "weight": -1.5197
+      },
+      {
+        "feature": "refund account",
+        "weight": -1.5197
+      },
+      {
+        "feature": "vendor",
+        "weight": -1.2882
+      },
+      {
+        "feature": "vendor payment",
+        "weight": -1.2882
+      },
+      {
+        "feature": "payment details",
+        "weight": -1.2882
+      },
+      {
+        "feature": "account_num ifsc",
+        "weight": -1.113
+      },
+      {
+        "feature": "donation",
+        "weight": -1.0681
+      },
+      {
+        "feature": "donation accepted",
+        "weight": -1.0681
+      },
+      {
+        "feature": "ifsc_code thank",
+        "weight": -1.0681
+      },
+      {
+        "feature": "account account_num",
+        "weight": -1.0681
+      },
+      {
+        "feature": "accepted",
+        "weight": -1.0681
+      },
+      {
+        "feature": "thank",
+        "weight": -1.0681
+      }
+    ]
+  },
+  "limitations": [
+    "Trained on back.dataset.csv (500 synthetic records with 4 distinct syntactic templates per class).",
+    "High test metrics (100% on synthetic split) reflect template memorization within this narrow distribution.",
+    "May exhibit false negatives on real-world phrasing with unseen criminal vernacular.",
+    "Must be utilized in conjunction with the explainable rule-based detector."
+  ]
+}

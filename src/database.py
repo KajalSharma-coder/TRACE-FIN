@@ -87,6 +87,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
             "Investigator Review Recommended" if d.get("review_required")
             else "No Immediate Review Indicated"
         )
+    d.setdefault("ml_prediction", None)
+    d.setdefault("ml_confidence", None)
+    d.setdefault("ml_high_risk_score", None)
+    d.setdefault("ml_model_version", None)
     return d
 
 
@@ -109,7 +113,11 @@ CREATE TABLE IF NOT EXISTS advertisements (
     review_required        INTEGER DEFAULT 0,
     review_recommendation  TEXT DEFAULT 'No Immediate Review Indicated',
     investigation_status   TEXT DEFAULT 'Open',
-    is_synthetic           INTEGER DEFAULT 0
+    is_synthetic           INTEGER DEFAULT 0,
+    ml_prediction          TEXT DEFAULT NULL,
+    ml_confidence          REAL DEFAULT NULL,
+    ml_high_risk_score     REAL DEFAULT NULL,
+    ml_model_version       TEXT DEFAULT NULL
 );
 """
 
@@ -141,6 +149,16 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE advertisements ADD COLUMN emails TEXT DEFAULT '[]'"
             )
+
+        # Phase 3 ML fields migration
+        for ml_col, col_type in [
+            ("ml_prediction", "TEXT DEFAULT NULL"),
+            ("ml_confidence", "REAL DEFAULT NULL"),
+            ("ml_high_risk_score", "REAL DEFAULT NULL"),
+            ("ml_model_version", "TEXT DEFAULT NULL"),
+        ]:
+            if ml_col not in existing_cols:
+                conn.execute(f"ALTER TABLE advertisements ADD COLUMN {ml_col} {col_type}")
 
         # Migrate legacy risk level labels to standardized title case
         conn.execute("UPDATE advertisements SET risk_level = 'Low' WHERE risk_level IN ('MINIMAL', 'Minimal', 'LOW', 'low')")
@@ -175,8 +193,9 @@ def insert_record(record: dict) -> str:
                 risk_score, risk_level, matched_categories, evidence,
                 urls, emails, phone_numbers, payment_identifiers,
                 review_required, review_recommendation,
-                investigation_status, is_synthetic
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                investigation_status, is_synthetic,
+                ml_prediction, ml_confidence, ml_high_risk_score, ml_model_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -195,6 +214,10 @@ def insert_record(record: dict) -> str:
                 record.get("review_recommendation", "No Immediate Review Indicated"),
                 record.get("investigation_status", "Open"),
                 1 if record.get("is_synthetic") else 0,
+                record.get("ml_prediction"),
+                float(record["ml_confidence"]) if record.get("ml_confidence") is not None else None,
+                float(record["ml_high_risk_score"]) if record.get("ml_high_risk_score") is not None else None,
+                record.get("ml_model_version"),
             ),
         )
         conn.commit()

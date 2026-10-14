@@ -77,11 +77,15 @@ if records:
     # Build display dataframe
     display_rows = []
     for r in records:
+        ml_pred = r.get("ml_prediction")
+        conf = r.get("ml_confidence")
+        ml_display = f"{ml_pred} ({conf*100:.0f}%)" if ml_pred and conf else (ml_pred or "—")
         display_rows.append({
             "Record ID": r["record_id"],
-            "Text Preview": (r["ad_text"][:80] + "…") if len(r["ad_text"]) > 80 else r["ad_text"],
+            "Text Preview": (r["ad_text"][:75] + "…") if len(r["ad_text"]) > 75 else r["ad_text"],
             "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
+            "ML Pred": ml_display,
             "Status": r["investigation_status"],
             "Matched Categories": ", ".join(r.get("matched_categories", [])) or "None",
             "URLs": len(r.get("urls", [])),
@@ -114,6 +118,8 @@ if records:
             "Advertisement Text": r["ad_text"],
             "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
+            "ML Prediction": r.get("ml_prediction", ""),
+            "ML Confidence": r.get("ml_confidence", ""),
             "Review Required": "Yes" if r.get("review_required") else "No",
             "Review Recommendation": r.get("review_recommendation", ""),
             "Matched Categories": "; ".join(r.get("matched_categories", [])),

@@ -2,7 +2,7 @@
 
 **Detect signals. Connect evidence. Prioritize investigations.**
 
-AI-assisted financial cybercrime intelligence platform — Phase 2: Explainable Rule-Based Detection Engine.
+AI-assisted financial cybercrime intelligence platform — Phase 3: Dataset-Driven ML Integration & Dual-Engine Intelligence.
 
 ---
 
@@ -19,9 +19,10 @@ The complete platform roadmap:
 - Detection of account rental, mule recruitment, and third-party forwarding arrangements.
 - Extraction of threat indicators (URLs, emails, phone numbers, UPI/payment identifiers, advance payment demands).
 - Contextual false-positive mitigation for educational, regulatory, and benign awareness texts.
-- OCR extraction of text embedded within advertisement screenshots (Phase 3).
-- Coordinated campaign and relationship discovery across shared identifiers (Phase 4).
-- Labelled training dataset, statistical machine learning models, and evaluation benchmarking (Future Phases).
+- Supervised ML classification baseline using TF-IDF and Logistic Regression (**Phase 3**).
+- Dual-engine threat triage comparing explainable heuristic rules with statistical ML (**Phase 3**).
+- OCR extraction of text embedded within advertisement screenshots (**Phase 4**).
+- Coordinated campaign and relationship discovery across shared identifiers (**Phase 4**).
 - Decision-support prioritization for fraud and cybercrime investigators.
 
 > **Investigator Mandate:** A suspicious signal is **not** proof of a crime. Human review and verified due process remain essential parts of every workflow. Automated scores are preliminary triage indicators, not definitive proof of illegal activity.
@@ -37,64 +38,89 @@ The complete platform roadmap:
 
 ---
 
-## Phase 2: Explainable Rule-Based Detection Engine
+## Phase 3: Dataset-Driven Machine Learning Baseline
 
-Phase 2 replaces Phase 1's isolated keyword scoring with an **explainable, deterministic rule-based detection engine** implemented in `src/detector.py`.
+Phase 3 introduces a reproducible text classification baseline built using scikit-learn (`TF-IDF + Logistic Regression`) integrated directly alongside Phase 2's explainable heuristic detection engine.
 
-### Distinction: Rule-Based Engine vs. Machine Learning
+### 1. Dataset Inspection & Governance
 
-> **Engineering Honesty:** Phase 2 uses a **rule-based expert heuristic system**, NOT a trained machine-learning model. It does not output statistical confidence, predictive fraud probabilities, or benchmarked classification metrics. Machine learning models will be integrated in subsequent phases using a labelled dataset.
+The platform inspects two local datasets under `data/`:
 
-### Detection Categories
+#### A. Primary Training Dataset: `data/back.dataset.csv`
+- **Total Samples:** 500 records
+- **Schema:** `['ID_No', 'Account_Holder_Name', 'Bank_Account_No', 'IFSC_Code', 'Advertisement_Text', 'Risk_Label']`
+- **Missing Values:** 0
+- **Class Distribution:**
+  - `High Risk`: 253 records (50.6%) — Positive Class (1)
+  - `Safe`: 247 records (49.4%) — Negative Class (0)
+- **Strict Data Governance (Zero PII Usage):** Identifier columns (`ID_No`, `Account_Holder_Name`, `Bank_Account_No`, `IFSC_Code`) are **strictly excluded** from model training. No banking credentials, account numbers, or personal names are ever printed, logged, or utilized as predictive features.
+- **Token Normalization:** During preprocessing, embedded account numbers, IFSC codes, UPI handles, and amounts are replaced with generic semantic tokens (`<ACCOUNT_NUM>`, `<IFSC_CODE>`, `<UPI_HANDLE>`, `<RENTAL_AMOUNT>`). This ensures the vectorizer learns financial crime terminology rather than memorizing synthetic account numbers.
 
-The rule engine inspects input across five modular threat categories:
-
-1. **Financial Account or Card Sale (`Financial Account or Card Sale`):**
-   - Detects contextual phrases offering to sell, purchase, or supply bank accounts (savings, current, merchant), accounts with online banking credentials / full kits, or debit / credit / ATM cards.
-   - Guardrails prevent flagging ordinary banking activities like opening a legitimate savings account or applying for bank debit cards.
-2. **KYC Evasion & Verification Bypass (`KYC Evasion & Verification Bypass`):**
-   - Detects claims that identity verification, document submission, or KYC can be skipped, bypassed, or avoided ("no KYC", "without verification", "fake KYC", "dummy accounts").
-   - Combined with account sales, this triggers a high-severity compounding risk multiplier.
-3. **Account Rental & Mule Recruitment (`Account Rental & Mule Recruitment`):**
-   - Identifies money mule recruitment: solicitations seeking to rent, lease, or borrow personal bank accounts or UPI handles, or arrangements to receive funds and forward them in exchange for a commission.
-4. **Suspicious Financial Solicitation (`Suspicious Financial Solicitation`):**
-   - Identifies requests for sensitive banking secrets (OTPs, PINs, passwords, CVV), upfront fees, advance payments before service delivery, and informal off-platform contact for account purchases.
-5. **Urgency, Secrecy & Unrealistic Promises (`Urgency, Secrecy & Unrealistic Promises`):**
-   - Flags non-disclosure pressure ("don't tell your bank", "off the books"), artificial scarcity ("only 2 slots left, act fast"), and impossible guaranteed passive income tied to account usage.
-   - *Limitation:* Urgency or generic promises alone never trigger a High or Critical risk classification.
-
-### Threat Entity Extraction
-
-The engine extracts four structured indicator types using conservative patterns:
-- **HTTP / HTTPS / www URLs** (with trailing punctuation stripping).
-- **Email Addresses** (RFC-compliant regex, filtering non-email file artifacts).
-- **Phone-Like Strings** (7 to 15 digits, supporting international prefixes, excluding single years or dates).
-- **Payment Identifiers** (UPI-style handles such as `name@okaxis`, `merchant@upi`, `seller@paytm`, and cryptocurrency mentions).
-
-> **Indicator Principle:** Extracted contact details and payment identifiers are **investigative leads for human review, not proof of wrongdoing**. Ordinary contact details alone contribute zero risk points unless suspicious threat patterns are detected.
-
-### False-Positive Awareness & Mitigation
-
-The detector evaluates text for educational, regulatory, and benign contexts:
-- Articles explaining KYC regulations (e.g. RBI guidelines).
-- Official banking advertisements (interest p.a., DICGC insurance, branch visit).
-- Routine payment reminders (utility bills, invoices).
-- Cybersecurity awareness advisories ("never share your OTP", "beware of mule recruitment").
-
-When advisory or legitimate context is detected without overt account trafficking combinations, the engine applies contextual score mitigations and documents the mitigation rationale in the explainable evidence list.
+#### B. Secondary Dataset: `data/cleaned_spam_dataset.csv`
+- **Total Samples:** 5,572 records (`ham`: 4,825, `spam`: 747)
+- **Schema:** `['label', 'message']`
+- **Task Isolation:** This dataset represents generic SMS spam (promotions, sweepstakes, dating solicitations). It is **not** merged into the primary financial ad training data, preventing label distortion and cross-domain semantic contamination.
 
 ---
 
-## Standardized Risk Tiers & Scoring
+### 2. ML Baseline Architecture & Evaluation
 
-Scores are deterministic integers bounded between 0 and 100:
+- **Pipeline:** `sklearn.pipeline.Pipeline`
+  1. `TfidfVectorizer`: Sublinear term-frequency scaling, unigrams & bigrams `(1, 2)`, English stop words removal, `min_df=2`, `max_df=0.98`.
+  2. `LogisticRegression`: Fixed seed `random_state=42`, `class_weight="balanced"`, `C=1.0`, `solver="lbfgs"`.
+- **Validation Strategy:** Stratified 80/20 train/test split with seed 42.
+  - Training Set: 400 records (202 High Risk, 198 Safe)
+  - Held-out Test Set: 100 records (51 High Risk, 49 Safe)
+- **Leakage Prevention:** The vectorizer and all vocabulary statistics are fitted **strictly on the training split**.
 
-| Risk Tier | Score Range | Meaning & Triage Recommendation |
-|---|---|---|
-| **Low** | 0 – 24 | Content exhibits legitimate, educational, or low-risk characteristics. No priority review indicated. |
-| **Medium** | 25 – 49 | Moderate or ambiguous indicators detected. Contextual human evaluation recommended before action. |
-| **High** | 50 – 74 | Strong indicators of suspicious financial solicitation or verification evasion. Investigator review required. |
-| **Critical** | 75 – 100 | Critical risk indicators (e.g., account trafficking bundled with KYC bypass). Immediate investigator review mandated. |
+#### Performance on Held-Out Test Split (100 Samples)
+
+| Metric | Safe (Class 0) | High Risk (Class 1) | Macro Average |
+|---|---|---|---|
+| **Precision** | 1.0000 | 1.0000 | 1.0000 |
+| **Recall** | 1.0000 | 1.0000 | 1.0000 |
+| **F1-Score** | 1.0000 | 1.0000 | 1.0000 |
+| **Support** | 49 | 51 | 100 |
+| **Overall Accuracy** | — | — | **100.00%** |
+
+#### Confusion Matrix
+```
+                      Predicted Safe    Predicted High Risk
+Actual Safe (0)             49                    0
+Actual High Risk (1)         0                   51
+```
+
+#### Top Influential Vocabulary Signals (Logistic Regression Coefficients)
+- **High-Risk Signals (+):** `rent`, `rent bank`, `bank account`, `rental_amount`, `send details`, `transaction advance`, `hawala`, `selling fully kyc`
+- **Safe Signals (-):** `refund`, `refund account`, `vendor`, `vendor payment`, `payment details`, `donation`, `donation accepted`, `salary account`
+
+---
+
+### 3. Honest Scientific Limitations
+
+1. **Synthetic Template Overfitting:** Inspection of `back.dataset.csv` revealed that all 500 samples are permutations of 4 syntactic templates for High Risk and 4 templates for Safe. The 100% test score reflects memorization within this narrow synthetic distribution.
+2. **Real-World Generalization Gap:** Novel real-world criminal phrasing outside these 4 templates (e.g. *"Work from home: receive transfers into your personal account and keep 10% commission"*) can trigger false negatives in the ML model, while being caught immediately by Phase 2's domain heuristics.
+3. **Non-Calibrated Probabilities:** Logistic regression decision probabilities reflect geometric distance to the separating hyperplane on the synthetic dataset, **not** real-world calibrated crime likelihoods.
+4. **Complementary Deployment:** The ML model is deployed as an advisory companion alongside the Phase 2 explainable rule engine, never as an unverified single point of failure.
+
+---
+
+### 4. Dual-Engine Intelligence Architecture
+
+TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
+
+1. **Explainable Rule-Based Engine (Phase 2):**
+   - 5 modular threat categories: Account/Card Sale, KYC Evasion, Account Rental / Mule Recruitment, Suspicious Solicitation, Urgency & Secrecy.
+   - Deterministic 0–100 score mapped to standardized tiers (`Low`, `Medium`, `High`, `Critical`).
+   - Contextual false-positive mitigation for educational/regulatory guidelines.
+2. **Supervised ML Baseline (Phase 3):**
+   - Independent TF-IDF + Logistic Regression classification.
+   - Decision score and active vocabulary signal extraction.
+3. **Consensus & Divergence Evaluation:**
+   - **Consensus Threat:** Both engines flag high risk → Highest triage priority.
+   - **Consensus Safe:** Both engines agree content is benign → Routine low priority.
+   - **Rule Alert (ML Divergence):** Heuristic flags threat but ML predicts Safe → Warns investigator that novel phrasing outside the synthetic training distribution is present.
+   - **ML Anomaly Alert:** ML flags high score while rules do not fire → Recommends investigator review top token signals for spurious correlation.
 
 ---
 
@@ -102,54 +128,61 @@ Scores are deterministic integers bounded between 0 and 100:
 
 ```
 trace-fin/
-├── app.py                          # Main dashboard entry point
-├── config.py                       # Paths, risk thresholds, design tokens, app version
-├── requirements.txt                # Dependencies (streamlit, pandas, plotly, pytest)
-├── README.md                       # Comprehensive platform documentation
-├── .gitignore                      # Exclusions for .venv, __pycache__, SQLite DB, secrets
-├── .streamlit/
-│   └── config.toml                 # Dark theme & custom navigation configuration
-├── assets/                         # Static assets directory
-├── data/                           # SQLite database storage
-│   └── tracefin.db                 # SQLite database (WAL mode, persistent)
-├── src/
-│   ├── __init__.py
-│   ├── database.py                 # SQLite CRUD, column migrations, metrics & normalization
-│   ├── detector.py                 # Phase 2: Explainable rule-based detection engine
-│   ├── demo_analyzer.py            # Phase 1: Legacy pattern matcher (preserved for reference)
-│   ├── sample_data.py              # Phase 2: Synthetic sample suite covering all categories
-│   └── ui_components.py            # Reusable UI cards, 4-column indicators, dossier view
+├── app.py                         # Threat Intelligence Dashboard (Overview, KPIs, Charts)
+├── config.py                      # Design tokens, paths, standardized risk tiers
+├── requirements.txt               # Dependencies (Streamlit, Pandas, Plotly, Scikit-learn, Pytest)
+├── README.md                      # Comprehensive documentation
+├── data/
+│   ├── back.dataset.csv           # Primary financial advertisement dataset (500 records)
+│   ├── cleaned_spam_dataset.csv   # General SMS spam dataset (isolated)
+│   └── tracefin.db                # SQLite persistent storage (WAL mode, automated schema migration)
+├── models/
+│   ├── financial_ad_classifier.joblib  # Trained scikit-learn TF-IDF + LogReg pipeline
+│   └── model_metrics.json         # Persisted evaluation metrics and feature weights
 ├── pages/
-│   ├── 1_Analyze_Advertisement.py  # Advertisement text intake & rule-based triage
-│   ├── 2_Investigation_Cases.py    # Case management & lifecycle status updates
-│   └── 3_Data_Explorer.py          # Intelligence search, filtering, and forensic CSV export
+│   ├── 1_Analyze_Advertisement.py # Dual-Engine Intake & Analysis (Heuristics + ML Diagnostics)
+│   ├── 2_Investigation_Cases.py   # Case Management, Filter, Status Workflow & Details
+│   └── 3_Data_Explorer.py         # Tabular Browser, Multi-indicator Filter, Forensic CSV Export
+├── scripts/
+│   └── train_model.py             # Reproducible ML training and benchmarking CLI
+├── src/
+│   ├── database.py                # Isolated SQLite persistence layer (idempotent migrations)
+│   ├── detector.py                # Explainable rule-based heuristic detection engine (Phase 2)
+│   ├── ml_model.py                # ML pipeline, preprocessing, training, inference & consensus
+│   ├── sample_data.py             # Synthetic demonstration records
+│   └── ui_components.py           # Reusable dark cybersecurity console UI components
 └── tests/
-    └── test_detector.py            # Pytest suite covering all 20+ engine test cases
+    ├── test_detector.py           # Phase 2 test suite (20 deterministic heuristic tests)
+    └── test_ml.py                 # Phase 3 test suite (15 dataset, ML, inference, consensus tests)
 ```
 
 ---
 
-## Environment Setup & Launch Instructions
+## Installation & Setup
 
-### Prerequisites
-
-- Python 3.12+ (tested under Fedora Linux / WSL)
-- SQLite 3 (standard library)
-
-### Virtual Environment Setup
+### Environment Requirements
+- Python 3.12+ (tested on Python 3.14 under Linux/WSL).
+- Virtual environment recommended.
 
 ```bash
-# Navigate to project directory
-cd /home/montylr2722l/Projects/trace-fin
+# Clone the repository
+git clone <repo-url>
+cd trace-fin
 
-# Create virtual environment (if not already created)
+# Create and activate virtual environment
 python3 -m venv .venv
-
-# Activate virtual environment
 source .venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
+```
+
+### Model Training CLI
+
+To retrain the ML baseline and generate fresh artifacts under `models/`:
+
+```bash
+python scripts/train_model.py
 ```
 
 ### Running the Application
@@ -160,59 +193,53 @@ streamlit run app.py
 
 Open your browser at **`http://localhost:8501`**.
 
-The SQLite database is initialized automatically at `data/tracefin.db`. If the database is empty, synthetic demonstration records representing diverse threat categories will be seeded automatically.
+The SQLite database initializes automatically at `data/tracefin.db`. Existing records are safely migrated without data loss.
 
-### Running the Test Suite
+### Running the Full Test Suite
 
 ```bash
-# Run pytest with verbose test output
-pytest -v tests/test_detector.py
+# Run all 35 tests (Detector + ML)
+pytest -v tests/
 ```
 
-The test suite validates:
-1. Empty and whitespace-only inputs.
-2. Legitimate bank advertisements.
-3. Educational KYC explanations.
-4. Normal utility payment reminders.
-5. Suspicious bank account sales.
-6. Combined account sale + KYC evasion.
-7. Account rental / mule recruitment.
-8. Urgency and secrecy combinations.
-9. URL extraction and sanitization.
-10. Email extraction.
-11. Phone-like number extraction.
-12. UPI payment identifier extraction.
-13. Score bounds (0–100).
-14. Risk-level score boundary mappings.
-15. Explainable evidence presence.
-16. Deterministic execution.
-17. Contact details alone not causing false positives.
-18. Backward-compatible database operations and column migrations.
-19. Streamlit application and page imports.
+Test coverage includes:
+- **Heuristics:** Empty inputs, benign banking, educational KYC notices, account sales, KYC bypass, mule recruitment, urgency combinations, indicator extractions (URLs, emails, phones, UPIs), score bounds.
+- **Machine Learning:** Token preprocessing, dataset integrity, spam dataset isolation, PII column exclusion, reproducible pipeline training, positive and negative class inference, missing model fallback, consensus/divergence logic, and database persistence.
 
 ---
 
-## Detector Functional Contract
+## Functional Contracts
 
+### 1. Rule-Based Detector (`src/detector.py`)
 ```python
 def analyze_ad(text: str) -> dict[str, Any]:
     """
-    Standard functional contract for TRACE//FIN analysis engine.
-
     Returns:
-        dict:
-            risk_score (int): 0 to 100.
-            risk_level (str): 'Low' | 'Medium' | 'High' | 'Critical'.
-            matched_categories (list[str]): Names of triggered categories.
-            evidence (list[str]): Human-readable explanations of matched rules.
-            urls (list[str]): Extracted URLs.
-            emails (list[str]): Extracted email addresses.
-            phone_numbers (list[str]): Extracted phone-like strings.
-            payment_identifiers (list[str]): Extracted UPI / payment handles.
-            review_required (bool): True if risk score >= 25.
-            disclaimer (str): Neutral preliminary triage notice.
-            review_recommendation (str): Specific triage recommendation.
-            analysis_mode (str): 'rule_based'.
+        risk_score (int): 0 to 100.
+        risk_level (str): 'Low' | 'Medium' | 'High' | 'Critical'.
+        matched_categories (list[str]): Triggered threat categories.
+        evidence (list[str]): Explainable evidence strings.
+        urls, emails, phone_numbers, payment_identifiers (list[str]).
+        review_required (bool): True if risk_score >= 25.
+        disclaimer (str): Preliminary triage notice.
+        analysis_mode (str): 'rule_based'.
+    """
+```
+
+### 2. Machine Learning Classifier (`src/ml_model.py`)
+```python
+def predict_ad_ml(text: str) -> dict[str, Any]:
+    """
+    Returns:
+        available (bool): True if model artifact loaded and text analyzed.
+        risk_label (str): 'High Risk' | 'Safe' | None.
+        prediction (int): 1 (High Risk) or 0 (Safe).
+        high_risk_score (float): Decision probability for positive class (0.0 to 1.0).
+        confidence (float): Classification confidence (0.5 to 1.0).
+        confidence_pct (float): Confidence percentage.
+        model_version (str): e.g. 'tfidf-logreg-v1.0'.
+        top_signals (list[dict]): Active vocabulary tokens and their logistic weights.
+        disclaimer (str): Scientific interpretability notice.
     """
 ```
 
@@ -220,6 +247,6 @@ def analyze_ad(text: str) -> dict[str, Any]:
 
 ## Future Roadmap
 
-- **Phase 3:** Optical Character Recognition (OCR) for text embedded inside advertisement screenshots and posters.
+- **Phase 4:** Optical Character Recognition (OCR) for text embedded inside advertisement screenshots and posters.
 - **Phase 4:** Cross-advertisement campaign discovery and entity relationship graph (clustering shared UPI handles, phone numbers, and phrases).
-- **Phase 5:** Labelled benchmark dataset, machine learning classification baseline (e.g. transformer/BERT text classification), evaluation metrics (precision, recall, F1), and role-based access control.
+- **Phase 5:** Pre-trained transformer/BERT fine-tuning on expanded naturalistic financial crime corpora, and role-based access control.

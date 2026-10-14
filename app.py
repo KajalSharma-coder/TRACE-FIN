@@ -170,11 +170,15 @@ recent = get_recent_records(10)
 if recent:
     display_data = []
     for r in recent:
+        ml_pred = r.get("ml_prediction")
+        conf = r.get("ml_confidence")
+        ml_display = f"{ml_pred} ({conf*100:.0f}%)" if ml_pred and conf else (ml_pred or "—")
         display_data.append({
             "Record ID": r["record_id"],
-            "Text Preview": (r["ad_text"][:85] + "…") if len(r["ad_text"]) > 85 else r["ad_text"],
+            "Text Preview": (r["ad_text"][:75] + "…") if len(r["ad_text"]) > 75 else r["ad_text"],
             "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
+            "ML Pred": ml_display,
             "Status": r["investigation_status"],
             "Submitted": r["submitted_at"][:16].replace("T", " "),
         })

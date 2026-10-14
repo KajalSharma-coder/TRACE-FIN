@@ -241,6 +241,106 @@ def render_status_badge(status: str) -> str:
     )
 
 
+def render_ml_badge(ml_prediction: str | None, confidence: float | None = None) -> str:
+    """Return HTML for a machine-learning classification badge with confidence."""
+    if not ml_prediction:
+        return (
+            '<span class="badge" style="background: rgba(100, 116, 139, 0.2); '
+            'color: #94a3b8; border: 1px solid #475569;">'
+            'ML: Unscored</span>'
+        )
+
+    pred = str(ml_prediction).strip()
+    if pred == "High Risk":
+        color = "#f97316"
+        bg = "rgba(249, 115, 22, 0.2)"
+        border = "rgba(249, 115, 22, 0.4)"
+    elif pred == "Safe":
+        color = "#22c55e"
+        bg = "rgba(34, 197, 94, 0.2)"
+        border = "rgba(34, 197, 94, 0.4)"
+    else:
+        color = "#38bdf8"
+        bg = "rgba(56, 189, 248, 0.2)"
+        border = "rgba(56, 189, 248, 0.4)"
+
+    conf_text = f" ({confidence * 100:.1f}%)" if confidence is not None else ""
+    return (
+        f'<span class="badge" style="background: {bg}; '
+        f'color: {color}; border: 1px solid {border}; font-weight: 600;">'
+        f'ML: {pred}{conf_text}</span>'
+    )
+
+
+def render_consensus_card(
+    rule_level: str,
+    ml_prediction: str | None,
+    rule_score: float | int = 0,
+    ml_confidence: float | None = None,
+) -> None:
+    """Render a dual-engine consensus or divergence indicator card."""
+    if not ml_prediction:
+        return
+
+    is_rule_threat = str(rule_level).capitalize() in ("Critical", "High", "Medium")
+    is_ml_threat = (str(ml_prediction).strip() == "High Risk")
+
+    if is_rule_threat and is_ml_threat:
+        border_col = "rgba(239, 68, 68, 0.6)"
+        bg_col = "rgba(239, 68, 68, 0.12)"
+        title_col = "#f87171"
+        icon = "🚨"
+        title = "Dual-Engine Consensus: Confirmed High Risk Threat"
+        desc = (
+            f"Both detection engines agree. Rule-based heuristic scored {rule_score}/100 ({rule_level}), "
+            f"and ML baseline classified as High Risk"
+            + (f" ({ml_confidence * 100:.1f}% confidence)." if ml_confidence else ".")
+        )
+    elif not is_rule_threat and not is_ml_threat:
+        border_col = "rgba(34, 197, 94, 0.5)"
+        bg_col = "rgba(34, 197, 94, 0.10)"
+        title_col = "#4ade80"
+        icon = "✓"
+        title = "Dual-Engine Consensus: Benign / Safe Transaction"
+        desc = "Both detection systems independently agree that this text contains standard, benign transaction language."
+    elif is_rule_threat and not is_ml_threat:
+        border_col = "rgba(249, 115, 22, 0.6)"
+        bg_col = "rgba(249, 115, 22, 0.12)"
+        title_col = "#fb923c"
+        icon = "⚠️"
+        title = "Engine Divergence: Rule-Based Threat Alert (ML Blind Spot)"
+        desc = (
+            f"Rule-based engine detected suspicious patterns ({rule_level}, score {rule_score}/100), "
+            f"while ML baseline predicted Safe. This is common with novel phrasing outside the synthetic training templates. "
+            f"Prioritize explainable rule triggers."
+        )
+    else:
+        border_col = "rgba(234, 179, 8, 0.6)"
+        bg_col = "rgba(234, 179, 8, 0.12)"
+        title_col = "#facc15"
+        icon = "⚠️"
+        title = "Engine Divergence: ML Anomaly Alert (Heuristic Divergence)"
+        desc = (
+            f"ML baseline flagged this text as High Risk"
+            + (f" ({ml_confidence * 100:.1f}%)," if ml_confidence else ",")
+            + " but rule heuristics found no specific violation. Verify vocabulary tokens for spurious correlation."
+        )
+
+    st.markdown(
+        f"""
+        <div style="background: {bg_col}; border: 1px solid {border_col}; border-radius: 8px; padding: 1rem 1.2rem; margin: 1rem 0;">
+            <div style="font-size: 0.95rem; font-weight: 600; color: {title_col}; margin-bottom: 0.3rem;">
+                {icon} {title}
+            </div>
+            <div style="font-size: 0.85rem; color: #cbd5e1; line-height: 1.5;">
+                {desc}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_demo_banner() -> None:
     """Show the rule-based analyzer and preliminary triage indicator."""
     st.markdown(
@@ -268,17 +368,20 @@ def render_record_detail(record: dict) -> None:
                 unsafe_allow_html=True)
 
     # Top-level indicators
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.markdown("**Risk Score**")
+        st.markdown("**Rule Risk Score**")
         score_val = record.get("risk_score", 0)
         # Format as int
         score_int = int(score_val) if isinstance(score_val, (int, float)) else score_val
         st.markdown(f"### {score_int} / 100")
     with col2:
-        st.markdown("**Risk Level**")
+        st.markdown("**Rule Risk Level**")
         st.markdown(render_risk_badge(record.get("risk_level", "Low")), unsafe_allow_html=True)
     with col3:
+        st.markdown("**ML Prediction**")
+        st.markdown(render_ml_badge(record.get("ml_prediction"), record.get("ml_confidence")), unsafe_allow_html=True)
+    with col4:
         st.markdown("**Investigation Status**")
         st.markdown(render_status_badge(record.get("investigation_status", "Open")),
                     unsafe_allow_html=True)
@@ -309,6 +412,15 @@ def render_record_detail(record: dict) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    # Dual-Engine Consensus or Divergence
+    if record.get("ml_prediction"):
+        render_consensus_card(
+            rule_level=record.get("risk_level", "Low"),
+            ml_prediction=record.get("ml_prediction"),
+            rule_score=record.get("risk_score", 0),
+            ml_confidence=record.get("ml_confidence"),
+        )
 
     # Original Ad Text
     st.markdown('<div class="section-header">Original Advertisement Text</div>',
@@ -392,16 +504,23 @@ def render_record_detail(record: dict) -> None:
         else:
             st.caption("None extracted")
 
-    # Unsupported / Future Capabilities (Section 7)
-    st.markdown('<div class="section-header">Advanced Engine Capabilities (Future Phases)</div>',
+    # Capabilities Roadmap
+    st.markdown('<div class="section-header">Advanced Engine Capabilities & Roadmap</div>',
                 unsafe_allow_html=True)
-    f_col1, f_col2 = st.columns(2)
+    f_col1, f_col2, f_col3 = st.columns(3)
     with f_col1:
-        st.markdown("**OCR / Text Inside Image**")
-        st.caption("⏳ *Not implemented (Scheduled for Phase 3)*")
+        st.markdown("**ML Text Classifier (Phase 3)**")
+        if record.get("ml_prediction"):
+            ver = record.get("ml_model_version") or "v1.0"
+            st.caption(f"✓ **Active** ({ver})")
+        else:
+            st.caption("⚡ Baseline Trained (Available)")
     with f_col2:
-        st.markdown("**Cross-Ad Relationship Leads**")
-        st.caption("⏳ *Not implemented (Scheduled for Phase 4)*")
+        st.markdown("**OCR / Image Text (Phase 4)**")
+        st.caption("⏳ *Scheduled for Phase 4*")
+    with f_col3:
+        st.markdown("**Network / Lead Graph (Phase 4)**")
+        st.caption("⏳ *Scheduled for Phase 4*")
 
     if record.get("is_synthetic"):
         st.info("ℹ️ Synthetic Demonstration Record — Fictional advertisement for workflow testing.")
