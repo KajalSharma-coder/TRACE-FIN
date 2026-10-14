@@ -2,7 +2,7 @@
 
 **Detect signals. Connect evidence. Prioritize investigations.**
 
-AI-assisted financial cybercrime intelligence platform — Phase 1.
+AI-assisted financial cybercrime intelligence platform — Phase 2: Explainable Rule-Based Detection Engine.
 
 ---
 
@@ -11,17 +11,20 @@ AI-assisted financial cybercrime intelligence platform — Phase 1.
 - **Problem ID:** SKIT002
 - **Title:** AI & Cybercrime — AI-Based Detection of Suspicious Financial Advertisements
 
-The platform identifies suspicious online advertisements and posts promoting the illicit sale or misuse of bank accounts, ATM cards, debit cards, credit cards, current accounts, savings accounts, or other financial access instruments.
+The platform identifies suspicious online advertisements and posts promoting the illicit sale, rental, or misuse of bank accounts, ATM cards, debit cards, credit cards, current accounts, savings accounts, or other financial access instruments.
 
 The complete platform roadmap:
 - Detection of financial account and card-sale language.
 - Identification of high-risk claims (No KYC, guaranteed access, unauthorized account-use arrangements).
-- Extraction of threat indicators (URLs, phone numbers, UPI/payment identifiers, advance payment demands).
+- Detection of account rental, mule recruitment, and third-party forwarding arrangements.
+- Extraction of threat indicators (URLs, emails, phone numbers, UPI/payment identifiers, advance payment demands).
+- Contextual false-positive mitigation for educational, regulatory, and benign awareness texts.
 - OCR extraction of text embedded within advertisement screenshots (Phase 3).
 - Coordinated campaign and relationship discovery across shared identifiers (Phase 4).
+- Labelled training dataset, statistical machine learning models, and evaluation benchmarking (Future Phases).
 - Decision-support prioritization for fraud and cybercrime investigators.
 
-> **Investigator Principle:** A suspicious signal is **not** proof of a crime. Human review and verified due process remain essential parts of every workflow.
+> **Investigator Mandate:** A suspicious signal is **not** proof of a crime. Human review and verified due process remain essential parts of every workflow. Automated scores are preliminary triage indicators, not definitive proof of illegal activity.
 
 ---
 
@@ -34,32 +37,64 @@ The complete platform roadmap:
 
 ---
 
-## Phase 1 Capabilities & Boundaries
+## Phase 2: Explainable Rule-Based Detection Engine
 
-### Fully Implemented in Phase 1
+Phase 2 replaces Phase 1's isolated keyword scoring with an **explainable, deterministic rule-based detection engine** implemented in `src/detector.py`.
 
-| Component / Feature | Operational Status | Notes |
+### Distinction: Rule-Based Engine vs. Machine Learning
+
+> **Engineering Honesty:** Phase 2 uses a **rule-based expert heuristic system**, NOT a trained machine-learning model. It does not output statistical confidence, predictive fraud probabilities, or benchmarked classification metrics. Machine learning models will be integrated in subsequent phases using a labelled dataset.
+
+### Detection Categories
+
+The rule engine inspects input across five modular threat categories:
+
+1. **Financial Account or Card Sale (`Financial Account or Card Sale`):**
+   - Detects contextual phrases offering to sell, purchase, or supply bank accounts (savings, current, merchant), accounts with online banking credentials / full kits, or debit / credit / ATM cards.
+   - Guardrails prevent flagging ordinary banking activities like opening a legitimate savings account or applying for bank debit cards.
+2. **KYC Evasion & Verification Bypass (`KYC Evasion & Verification Bypass`):**
+   - Detects claims that identity verification, document submission, or KYC can be skipped, bypassed, or avoided ("no KYC", "without verification", "fake KYC", "dummy accounts").
+   - Combined with account sales, this triggers a high-severity compounding risk multiplier.
+3. **Account Rental & Mule Recruitment (`Account Rental & Mule Recruitment`):**
+   - Identifies money mule recruitment: solicitations seeking to rent, lease, or borrow personal bank accounts or UPI handles, or arrangements to receive funds and forward them in exchange for a commission.
+4. **Suspicious Financial Solicitation (`Suspicious Financial Solicitation`):**
+   - Identifies requests for sensitive banking secrets (OTPs, PINs, passwords, CVV), upfront fees, advance payments before service delivery, and informal off-platform contact for account purchases.
+5. **Urgency, Secrecy & Unrealistic Promises (`Urgency, Secrecy & Unrealistic Promises`):**
+   - Flags non-disclosure pressure ("don't tell your bank", "off the books"), artificial scarcity ("only 2 slots left, act fast"), and impossible guaranteed passive income tied to account usage.
+   - *Limitation:* Urgency or generic promises alone never trigger a High or Critical risk classification.
+
+### Threat Entity Extraction
+
+The engine extracts four structured indicator types using conservative patterns:
+- **HTTP / HTTPS / www URLs** (with trailing punctuation stripping).
+- **Email Addresses** (RFC-compliant regex, filtering non-email file artifacts).
+- **Phone-Like Strings** (7 to 15 digits, supporting international prefixes, excluding single years or dates).
+- **Payment Identifiers** (UPI-style handles such as `name@okaxis`, `merchant@upi`, `seller@paytm`, and cryptocurrency mentions).
+
+> **Indicator Principle:** Extracted contact details and payment identifiers are **investigative leads for human review, not proof of wrongdoing**. Ordinary contact details alone contribute zero risk points unless suspicious threat patterns are detected.
+
+### False-Positive Awareness & Mitigation
+
+The detector evaluates text for educational, regulatory, and benign contexts:
+- Articles explaining KYC regulations (e.g. RBI guidelines).
+- Official banking advertisements (interest p.a., DICGC insurance, branch visit).
+- Routine payment reminders (utility bills, invoices).
+- Cybersecurity awareness advisories ("never share your OTP", "beware of mule recruitment").
+
+When advisory or legitimate context is detected without overt account trafficking combinations, the engine applies contextual score mitigations and documents the mitigation rationale in the explainable evidence list.
+
+---
+
+## Standardized Risk Tiers & Scoring
+
+Scores are deterministic integers bounded between 0 and 100:
+
+| Risk Tier | Score Range | Meaning & Triage Recommendation |
 |---|---|---|
-| **Investigator Console UI/UX** | ✅ Operational | Custom dark theme, consistent sidebar, responsive metrics, badges |
-| **Threat Dashboard** | ✅ Operational | Database-derived metrics, Plotly charts (Risk, Activity, Categories), recent dossiers |
-| **Ad Analysis Workflow** | ✅ Operational | Intake form, character count, validation, rule-based demo triage, DB save |
-| **Case Management** | ✅ Operational | Filterable case list, status lifecycle transitions (Open/Reviewing/Escalated/Closed), DB persistence |
-| **Intelligence Data Explorer** | ✅ Operational | Multi-field search, risk/status filtering, dossier inspection, forensic CSV export |
-| **Persistent Storage** | ✅ Operational | SQLite (WAL mode) under `data/tracefin.db` with parameterized queries and JSON serialization |
-| **Synthetic Demo Data** | ✅ Operational | 5 realistic synthetic examples (account sale, card sale, clean savings, awareness, ambiguous) seeded once |
-| **Validation & Error Handling** | ✅ Operational | Input validation, empty states across all charts and tables, error feedback |
-
-### Demo Boundaries (Planned for Future Phases)
-
-| Future Capability | Current Phase 1 Status | Target Phase |
-|---|---|---|
-| **Trained ML Detection Model** | ⏳ Rule-based demo analyzer (`src/demo_analyzer.py`) | Phase 2 |
-| **Labelled Training Dataset** | ⏳ Synthetic demonstration records only | Phase 2 |
-| **OCR for Screenshot Text** | ⏳ Field marked "Not implemented" in case dossiers | Phase 3 |
-| **Cross-Ad Network Graph** | ⏳ Field marked "Not implemented" in case dossiers | Phase 4 |
-| **User Authentication / RBAC** | ⏳ Single investigator local session | Phase 5 |
-
-> **Important:** All Phase 1 analysis results are explicitly marked with the `DEMO ANALYSIS` indicator. Scores reflect deterministic pattern matches and must not be represented as a probability of criminal activity.
+| **Low** | 0 – 24 | Content exhibits legitimate, educational, or low-risk characteristics. No priority review indicated. |
+| **Medium** | 25 – 49 | Moderate or ambiguous indicators detected. Contextual human evaluation recommended before action. |
+| **High** | 50 – 74 | Strong indicators of suspicious financial solicitation or verification evasion. Investigator review required. |
+| **Critical** | 75 – 100 | Critical risk indicators (e.g., account trafficking bundled with KYC bypass). Immediate investigator review mandated. |
 
 ---
 
@@ -68,25 +103,28 @@ The complete platform roadmap:
 ```
 trace-fin/
 ├── app.py                          # Main dashboard entry point
-├── config.py                       # Paths, constants, design tokens, risk levels
-├── requirements.txt                # Production dependencies (streamlit, pandas, plotly)
+├── config.py                       # Paths, risk thresholds, design tokens, app version
+├── requirements.txt                # Dependencies (streamlit, pandas, plotly, pytest)
 ├── README.md                       # Comprehensive platform documentation
-├── .gitignore                      # Git exclusion rules
+├── .gitignore                      # Exclusions for .venv, __pycache__, SQLite DB, secrets
 ├── .streamlit/
-│   └── config.toml                 # Streamlit dark theme & custom navigation config
+│   └── config.toml                 # Dark theme & custom navigation configuration
 ├── assets/                         # Static assets directory
 ├── data/                           # SQLite database storage
-│   └── tracefin.db                 # Auto-initialized SQLite database (WAL mode)
+│   └── tracefin.db                 # SQLite database (WAL mode, persistent)
 ├── src/
 │   ├── __init__.py
-│   ├── database.py                 # SQLite CRUD, migration, and metrics layer
-│   ├── demo_analyzer.py            # Rule-based demo pattern matcher & entity extractor
-│   ├── sample_data.py              # Synthetic demo records (seeded once when DB is empty)
-│   └── ui_components.py            # Reusable UI cards, badges, CSS, and record dossier
-└── pages/
-    ├── 1_Analyze_Advertisement.py  # Advertisement text intake and triage
-    ├── 2_Investigation_Cases.py    # Case management & lifecycle status updates
-    └── 3_Data_Explorer.py          # Intelligence search, filtering, and CSV export
+│   ├── database.py                 # SQLite CRUD, column migrations, metrics & normalization
+│   ├── detector.py                 # Phase 2: Explainable rule-based detection engine
+│   ├── demo_analyzer.py            # Phase 1: Legacy pattern matcher (preserved for reference)
+│   ├── sample_data.py              # Phase 2: Synthetic sample suite covering all categories
+│   └── ui_components.py            # Reusable UI cards, 4-column indicators, dossier view
+├── pages/
+│   ├── 1_Analyze_Advertisement.py  # Advertisement text intake & rule-based triage
+│   ├── 2_Investigation_Cases.py    # Case management & lifecycle status updates
+│   └── 3_Data_Explorer.py          # Intelligence search, filtering, and forensic CSV export
+└── tests/
+    └── test_detector.py            # Pytest suite covering all 20+ engine test cases
 ```
 
 ---
@@ -101,10 +139,10 @@ trace-fin/
 ### Virtual Environment Setup
 
 ```bash
-# Navigate to the workspace
-cd trace-fin
+# Navigate to project directory
+cd /home/montylr2722l/Projects/trace-fin
 
-# Create virtual environment
+# Create virtual environment (if not already created)
 python3 -m venv .venv
 
 # Activate virtual environment
@@ -114,74 +152,74 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### Launching the Application
+### Running the Application
 
 ```bash
 streamlit run app.py
 ```
 
-The console will start at `http://localhost:8501`.
+Open your browser at **`http://localhost:8501`**.
 
-The SQLite database is created automatically at `data/tracefin.db` on first run. If the database is empty, 5 synthetic demo records will be seeded automatically.
+The SQLite database is initialized automatically at `data/tracefin.db`. If the database is empty, synthetic demonstration records representing diverse threat categories will be seeded automatically.
+
+### Running the Test Suite
+
+```bash
+# Run pytest with verbose test output
+pytest -v tests/test_detector.py
+```
+
+The test suite validates:
+1. Empty and whitespace-only inputs.
+2. Legitimate bank advertisements.
+3. Educational KYC explanations.
+4. Normal utility payment reminders.
+5. Suspicious bank account sales.
+6. Combined account sale + KYC evasion.
+7. Account rental / mule recruitment.
+8. Urgency and secrecy combinations.
+9. URL extraction and sanitization.
+10. Email extraction.
+11. Phone-like number extraction.
+12. UPI payment identifier extraction.
+13. Score bounds (0–100).
+14. Risk-level score boundary mappings.
+15. Explainable evidence presence.
+16. Deterministic execution.
+17. Contact details alone not causing false positives.
+18. Backward-compatible database operations and column migrations.
+19. Streamlit application and page imports.
 
 ---
 
-## Database Architecture
-
-- **Path:** `data/tracefin.db`
-- **Engine:** SQLite with WAL mode (`PRAGMA journal_mode=WAL`)
-- **Schema:**
-  - `record_id`: Stable identifier (e.g. `TF-A1B2C3D4`)
-  - `ad_text`: Raw advertisement / post content
-  - `submitted_at`: ISO 8601 UTC timestamp
-  - `analysis_mode`: Execution engine marker (`demo`)
-  - `risk_score`: Quantitative risk score (0.0 – 100.0)
-  - `risk_level`: Severity tier (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `MINIMAL`)
-  - `matched_categories`: JSON array of triggered risk indicators
-  - `evidence`: JSON object mapping categories to extracted evidence snippets
-  - `urls`: JSON array of extracted URLs (with cleaned trailing punctuation)
-  - `phone_numbers`: JSON array of extracted contact phone numbers
-  - `payment_identifiers`: JSON array of extracted UPI / crypto payment handles
-  - `review_required`: Integer boolean (1 if risk score >= 40, else 0)
-  - `review_recommendation`: Human-readable investigator action recommendation
-  - `investigation_status`: Operational status (`Open`, `Reviewing`, `Escalated`, `Closed`)
-  - `is_synthetic`: 1 for seeded sample records, 0 for user submissions
-
----
-
-## Future Integration Interface
-
-In subsequent phases, the deterministic demo analyzer will be swapped with a trained machine learning pipeline. The platform isolates this integration via a single stable functional contract:
+## Detector Functional Contract
 
 ```python
-def analyze_ad(text: str) -> dict:
+def analyze_ad(text: str) -> dict[str, Any]:
     """
-    Standardized detector contract for TRACE//FIN analysis engine.
-
-    Args:
-        text (str): Raw advertisement or message text.
+    Standard functional contract for TRACE//FIN analysis engine.
 
     Returns:
         dict:
-            risk_score (float): Computed risk score from 0.0 to 100.0.
-            risk_level (str): 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'MINIMAL'.
-            matched_categories (list[str]): Triggered threat categories.
-            evidence (dict[str, list[str]]): Category-to-snippets mapping.
+            risk_score (int): 0 to 100.
+            risk_level (str): 'Low' | 'Medium' | 'High' | 'Critical'.
+            matched_categories (list[str]): Names of triggered categories.
+            evidence (list[str]): Human-readable explanations of matched rules.
             urls (list[str]): Extracted URLs.
-            phone_numbers (list[str]): Extracted contact numbers.
-            payment_identifiers (list[str]): Extracted payment identifiers.
-            review_required (bool): Flag indicating human review is recommended.
-            review_recommendation (str): Specific triage action for investigators.
-            analysis_mode (str): Engine version or mode indicator.
+            emails (list[str]): Extracted email addresses.
+            phone_numbers (list[str]): Extracted phone-like strings.
+            payment_identifiers (list[str]): Extracted UPI / payment handles.
+            review_required (bool): True if risk score >= 25.
+            disclaimer (str): Neutral preliminary triage notice.
+            review_recommendation (str): Specific triage recommendation.
+            analysis_mode (str): 'rule_based'.
     """
 ```
 
-Because presentation, storage, and analysis logic are completely separated, replacing `src/demo_analyzer.py` with an ML model requires zero changes to the UI pages or database schema.
-
 ---
 
-## Security & Privacy Considerations
+## Future Roadmap
 
-- **Local Processing:** No advertisement text is transmitted to external cloud services or third-party APIs.
-- **Data Protection:** Synthetic records use RFC-standard reserved domains (`example.com`) and fictional phone/account patterns. No actual credentials, payment secrets, or real personally identifiable information (PII) are stored.
-- **SQL Injection Prevention:** All database operations strictly employ parameterized SQLite bindings (`?`).
+- **Phase 3:** Optical Character Recognition (OCR) for text embedded inside advertisement screenshots and posters.
+- **Phase 4:** Cross-advertisement campaign discovery and entity relationship graph (clustering shared UPI handles, phone numbers, and phrases).
+- **Phase 5:** Labelled benchmark dataset, machine learning classification baseline (e.g. transformer/BERT text classification), evaluation metrics (precision, recall, F1), and role-based access control.

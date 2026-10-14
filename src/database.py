@@ -44,23 +44,44 @@ def _deserialize_list(value: str | None) -> list:
         return []
 
 
-def _deserialize_dict(value: str | None) -> dict:
-    """Deserialize a JSON text column back to a Python dict."""
+def _deserialize_evidence(value: str | None) -> list | dict:
+    """Deserialize evidence JSON column whether stored as a list or a dict."""
     if not value:
-        return {}
+        return []
     try:
-        result = json.loads(value)
-        return result if isinstance(result, dict) else {}
+        res = json.loads(value)
+        if isinstance(res, (list, dict)):
+            return res
+        return [str(res)]
     except (json.JSONDecodeError, TypeError):
-        return {}
+        return []
+
+
+def _normalize_risk_level(raw: str | None) -> str:
+    """Normalize risk levels to standardized title case (Critical, High, Medium, Low)."""
+    if not raw:
+        return "Low"
+    s = str(raw).strip().upper()
+    if s in ("MINIMAL", "LOW"):
+        return "Low"
+    if s == "MEDIUM":
+        return "Medium"
+    if s == "HIGH":
+        return "High"
+    if s == "CRITICAL":
+        return "Critical"
+    return str(raw).capitalize()
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     """Convert a Row to a plain dict with deserialized JSON fields."""
     d = dict(row)
-    for key in ("matched_categories", "urls", "phone_numbers", "payment_identifiers"):
+    for key in ("matched_categories", "urls", "emails", "phone_numbers", "payment_identifiers"):
         d[key] = _deserialize_list(d.get(key))
-    d["evidence"] = _deserialize_dict(d.get("evidence"))
+    d["evidence"] = _deserialize_evidence(d.get("evidence"))
+    d["risk_level"] = _normalize_risk_level(d.get("risk_level"))
+    if "emails" not in d or d["emails"] is None:
+        d["emails"] = []
     if "review_recommendation" not in d or not d["review_recommendation"]:
         d["review_recommendation"] = (
             "Investigator Review Recommended" if d.get("review_required")
@@ -76,12 +97,13 @@ CREATE TABLE IF NOT EXISTS advertisements (
     record_id              TEXT PRIMARY KEY,
     ad_text                TEXT NOT NULL,
     submitted_at           TEXT NOT NULL,
-    analysis_mode          TEXT NOT NULL DEFAULT 'demo',
+    analysis_mode          TEXT NOT NULL DEFAULT 'rule_based',
     risk_score             REAL DEFAULT 0.0,
-    risk_level             TEXT DEFAULT 'MINIMAL',
+    risk_level             TEXT DEFAULT 'Low',
     matched_categories     TEXT DEFAULT '[]',
-    evidence               TEXT DEFAULT '{}',
+    evidence               TEXT DEFAULT '[]',
     urls                   TEXT DEFAULT '[]',
+    emails                 TEXT DEFAULT '[]',
     phone_numbers          TEXT DEFAULT '[]',
     payment_identifiers    TEXT DEFAULT '[]',
     review_required        INTEGER DEFAULT 0,
@@ -101,19 +123,30 @@ CREATE INDEX IF NOT EXISTS idx_investigation_status ON advertisements (investiga
 
 
 def init_db() -> None:
-    """Create the schema if it does not exist (idempotent) and migrate columns."""
+    """Create schema if not existing (idempotent) and migrate columns/labels."""
     with _connect() as conn:
         conn.execute(_CREATE_TABLE)
         conn.execute(_CREATE_INDEX_RISK)
         conn.execute(_CREATE_INDEX_STATUS)
 
-        # Ensure review_recommendation column exists in legacy tables
+        # Check existing columns for safe schema evolution
         cursor = conn.execute("PRAGMA table_info(advertisements)")
         existing_cols = [r["name"] for r in cursor.fetchall()]
+
         if "review_recommendation" not in existing_cols:
             conn.execute(
                 "ALTER TABLE advertisements ADD COLUMN review_recommendation TEXT DEFAULT 'No Immediate Review Indicated'"
             )
+        if "emails" not in existing_cols:
+            conn.execute(
+                "ALTER TABLE advertisements ADD COLUMN emails TEXT DEFAULT '[]'"
+            )
+
+        # Migrate legacy risk level labels to standardized title case
+        conn.execute("UPDATE advertisements SET risk_level = 'Low' WHERE risk_level IN ('MINIMAL', 'Minimal', 'LOW', 'low')")
+        conn.execute("UPDATE advertisements SET risk_level = 'Medium' WHERE risk_level IN ('MEDIUM', 'medium')")
+        conn.execute("UPDATE advertisements SET risk_level = 'High' WHERE risk_level IN ('HIGH', 'high')")
+        conn.execute("UPDATE advertisements SET risk_level = 'Critical' WHERE risk_level IN ('CRITICAL', 'critical')")
 
         conn.commit()
 
@@ -132,6 +165,7 @@ def insert_record(record: dict) -> str:
     """Insert a new advertisement record. Returns the record_id."""
     record_id = record.get("record_id") or generate_record_id()
     now = record.get("submitted_at") or datetime.now(timezone.utc).isoformat()
+    std_level = _normalize_risk_level(record.get("risk_level", "Low"))
 
     with _connect() as conn:
         conn.execute(
@@ -139,21 +173,22 @@ def insert_record(record: dict) -> str:
             INSERT INTO advertisements (
                 record_id, ad_text, submitted_at, analysis_mode,
                 risk_score, risk_level, matched_categories, evidence,
-                urls, phone_numbers, payment_identifiers,
+                urls, emails, phone_numbers, payment_identifiers,
                 review_required, review_recommendation,
                 investigation_status, is_synthetic
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
                 record.get("ad_text", ""),
                 now,
-                record.get("analysis_mode", "demo"),
-                record.get("risk_score", 0.0),
-                record.get("risk_level", "MINIMAL"),
+                record.get("analysis_mode", "rule_based"),
+                float(record.get("risk_score", 0.0)),
+                std_level,
                 _serialize(record.get("matched_categories")),
                 _serialize(record.get("evidence")),
                 _serialize(record.get("urls")),
+                _serialize(record.get("emails")),
                 _serialize(record.get("phone_numbers")),
                 _serialize(record.get("payment_identifiers")),
                 1 if record.get("review_required") else 0,
@@ -223,7 +258,7 @@ def search_records(
         params.extend([like, like])
 
     if risk_level and risk_level != "All":
-        clauses.append("risk_level = ?")
+        clauses.append("LOWER(risk_level) = LOWER(?)")
         params.append(risk_level)
 
     if status and status != "All":
@@ -241,15 +276,17 @@ def search_records(
 # ── Dashboard Metrics ──────────────────────────────────────────────────
 
 def get_dashboard_metrics() -> dict:
-    """Aggregate metrics for the dashboard, derived from stored records."""
+    """Aggregate metrics for dashboard, derived from stored records."""
     with _connect() as conn:
         total = conn.execute("SELECT COUNT(*) FROM advertisements").fetchone()[0]
 
-        risk_counts = {}
+        # Standardized risk counts dictionary
+        risk_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
         for row in conn.execute(
             "SELECT risk_level, COUNT(*) as cnt FROM advertisements GROUP BY risk_level"
         ).fetchall():
-            risk_counts[row["risk_level"]] = row["cnt"]
+            std_lvl = _normalize_risk_level(row["risk_level"])
+            risk_counts[std_lvl] = risk_counts.get(std_lvl, 0) + row["cnt"]
 
         status_counts = {}
         for row in conn.execute(

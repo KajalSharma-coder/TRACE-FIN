@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from config import APP_NAME, APP_TAGLINE, APP_CATEGORY, COLORS, RISK_LEVELS
+from config import APP_NAME, APP_TAGLINE, APP_CATEGORY, COLORS, RISK_LEVELS, STANDARDIZED_RISK_TIERS
 from src.database import init_db, get_dashboard_metrics, get_recent_records
 from src.sample_data import seed_demo_data
 from src.ui_components import (
@@ -48,13 +48,13 @@ with col1:
         unsafe_allow_html=True,
     )
 with col2:
-    high_count = metrics["risk_counts"].get("HIGH", 0) + metrics["risk_counts"].get("CRITICAL", 0)
+    high_count = metrics["risk_counts"].get("High", 0) + metrics["risk_counts"].get("Critical", 0)
     st.markdown(
         render_metric_card("High-Risk Records", high_count, COLORS["danger"]),
         unsafe_allow_html=True,
     )
 with col3:
-    med_count = metrics["risk_counts"].get("MEDIUM", 0)
+    med_count = metrics["risk_counts"].get("Medium", 0)
     st.markdown(
         render_metric_card("Medium-Risk Records", med_count, COLORS["warning"]),
         unsafe_allow_html=True,
@@ -71,25 +71,23 @@ st.markdown("")
 # ── Charts ─────────────────────────────────────────────────────────────
 chart_col1, chart_col2 = st.columns(2)
 
-# Risk Distribution
+# Risk Distribution (Standardized: Critical, High, Medium, Low)
 with chart_col1:
     st.markdown('<div class="section-header">Risk Level Distribution</div>',
                 unsafe_allow_html=True)
     risk_data = metrics["risk_counts"]
-    if risk_data:
-        levels = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "MINIMAL"]
-        # Only include levels that exist or show all standard categories
-        active_levels = [lvl for lvl in levels if lvl in risk_data]
-        counts = [risk_data.get(lvl, 0) for lvl in active_levels]
-        colors = [RISK_LEVELS.get(lvl, {}).get("color", "#64748b") for lvl in active_levels]
-        labels = [RISK_LEVELS.get(lvl, {}).get("label", lvl) for lvl in active_levels]
+    if risk_data and sum(risk_data.values()) > 0:
+        levels = STANDARDIZED_RISK_TIERS  # ["Critical", "High", "Medium", "Low"]
+        counts = [risk_data.get(lvl, 0) for lvl in levels]
+        colors = [RISK_LEVELS.get(lvl, {}).get("color", "#64748b") for lvl in levels]
+        labels = [RISK_LEVELS.get(lvl, {}).get("label", lvl) for lvl in levels]
 
         fig = go.Figure(data=[go.Bar(
             x=labels, y=counts,
             marker_color=colors,
             text=counts,
             textposition='auto',
-            hovertemplate="<b>%{x}</b><br>Count: %{y}<extra></extra>",
+            hovertemplate="<b>%{x} Risk</b><br>Dossiers: %{y}<extra></extra>",
         )])
         fig.update_layout(
             plot_bgcolor="rgba(0,0,0,0)",
@@ -135,7 +133,7 @@ with chart_col2:
         st.info("No activity data available yet.")
 
 # Top Indicator Categories
-st.markdown('<div class="section-header">Most Frequently Observed Indicator Categories</div>',
+st.markdown('<div class="section-header">Most Frequently Observed Threat Categories</div>',
             unsafe_allow_html=True)
 cat_counts = metrics["category_counts"]
 if cat_counts:
@@ -162,7 +160,7 @@ if cat_counts:
     )
     st.plotly_chart(fig3, use_container_width=True)
 else:
-    st.info("No indicator categories observed yet.")
+    st.info("No threat categories observed yet.")
 
 # ── Recent Activity ────────────────────────────────────────────────────
 st.markdown('<div class="section-header">Recent Advertisements & Cases</div>',
@@ -175,7 +173,7 @@ if recent:
         display_data.append({
             "Record ID": r["record_id"],
             "Text Preview": (r["ad_text"][:85] + "…") if len(r["ad_text"]) > 85 else r["ad_text"],
-            "Risk Score": r["risk_score"],
+            "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
             "Status": r["investigation_status"],
             "Submitted": r["submitted_at"][:16].replace("T", " "),

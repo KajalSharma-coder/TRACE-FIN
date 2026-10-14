@@ -6,7 +6,7 @@ Case management: search, filter, view case dossiers, and manage lifecycle status
 import streamlit as st
 import pandas as pd
 
-from config import APP_NAME, CASE_STATUSES, RISK_LEVELS, STATUS_COLORS, COLORS
+from config import APP_NAME, CASE_STATUSES, STANDARDIZED_RISK_TIERS, STATUS_COLORS, COLORS
 from src.database import (
     init_db, search_records, get_record, update_status,
 )
@@ -58,7 +58,7 @@ with filter_col1:
 with filter_col2:
     risk_filter = st.selectbox(
         "Filter by Risk Level",
-        ["All"] + list(RISK_LEVELS.keys()),
+        ["All"] + STANDARDIZED_RISK_TIERS,
         key="case_risk_filter_select",
     )
 
@@ -87,7 +87,7 @@ if records:
         display_data.append({
             "Record ID": r["record_id"],
             "Text Preview": (r["ad_text"][:75] + "…") if len(r["ad_text"]) > 75 else r["ad_text"],
-            "Risk Score": r["risk_score"],
+            "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
             "Status": r["investigation_status"],
             "Review Rec": (r.get("review_recommendation") or "")[:45] + "…",

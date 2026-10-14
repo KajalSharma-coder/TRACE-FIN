@@ -1,13 +1,13 @@
 """
 TRACE//FIN — Analyze Advertisement Page
-Dedicated investigator analysis workflow for suspicious financial advertisements.
+Dedicated investigator analysis workflow for suspicious financial advertisements (Phase 2).
 """
 
 import streamlit as st
 
 from config import APP_NAME
 from src.database import init_db, insert_record, get_record, generate_record_id
-from src.demo_analyzer import analyze_ad
+from src.detector import analyze_ad
 from src.sample_data import seed_demo_data
 from src.ui_components import (
     inject_global_css, render_sidebar, render_demo_banner,
@@ -29,7 +29,7 @@ render_sidebar()
 
 # ── Header ─────────────────────────────────────────────────────────────
 st.markdown("# 🔍 Analyze Financial Advertisement")
-st.caption("Submit suspicious advertisement, post, or message text for multi-signal triage")
+st.caption("Explainable rule-based detection engine for suspicious financial advertisements & posts")
 render_demo_banner()
 
 # ── Session state ──────────────────────────────────────────────────────
@@ -47,11 +47,10 @@ ad_text = st.text_area(
     height=200,
     placeholder=(
         "Paste the raw text of a financial advertisement, forum post, or chat message here…\n\n"
-        "Example:\n"
-        "🔥 BANK ACCOUNTS FOR SALE 🔥\n"
-        "Current accounts and savings accounts available. No KYC required!\n"
-        "Guaranteed instant access. Contact on Telegram @findeals_example\n"
-        "Contact: +91-98765-43210"
+        "Examples:\n"
+        "• 'Bank accounts for sale, no KYC required, contact Telegram @seller'\n"
+        "• 'Rent your bank account and earn daily commission receiving transfers'\n"
+        "• 'Debit cards available in bulk, instant activation, pay via crypto'"
     ),
     key="ad_text_input",
     label_visibility="collapsed",
@@ -89,20 +88,21 @@ if analyze_clicked:
     if not ad_text or not ad_text.strip():
         st.error("⚠ Validation Error: Advertisement text cannot be empty. Please enter or paste text to analyze.")
     else:
-        with st.spinner("Executing rule-based pattern triage and indicator extraction…"):
+        with st.spinner("Executing explainable rule-based analysis and indicator extraction…"):
             result = analyze_ad(ad_text.strip())
 
-        # Save to database
+        # Save to database with Phase 2 schema
         record_id = generate_record_id()
         record = {
             "record_id": record_id,
             "ad_text": ad_text.strip(),
-            "analysis_mode": "demo",
+            "analysis_mode": "rule_based",
             "risk_score": result["risk_score"],
             "risk_level": result["risk_level"],
             "matched_categories": result["matched_categories"],
             "evidence": result["evidence"],
             "urls": result["urls"],
+            "emails": result["emails"],
             "phone_numbers": result["phone_numbers"],
             "payment_identifiers": result["payment_identifiers"],
             "review_required": result["review_required"],
@@ -114,7 +114,7 @@ if analyze_clicked:
 
         st.session_state.analysis_result = result
         st.session_state.saved_record_id = saved_id
-        st.success(f"✓ Analysis complete. Record persisted to database as **{saved_id}** with status **Open**.")
+        st.success(f"✓ Rule-based analysis complete. Record persisted as **{saved_id}** with status **Open**.")
 
 # ── Display Results ────────────────────────────────────────────────────
 if st.session_state.analysis_result and st.session_state.saved_record_id:
@@ -122,8 +122,8 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
 
     st.markdown("---")
     st.markdown(
-        '<div class="demo-banner">◆ DEMO ANALYSIS RESULT — '
-        'Pattern-based scoring for demonstration only. Not a probability of criminal activity. ◆</div>',
+        '<div class="demo-banner">◆ RULE-BASED ANALYSIS DOSSIER — '
+        'Explainable heuristic indicators for investigator review. Automated preliminary assessment. ◆</div>',
         unsafe_allow_html=True,
     )
 
@@ -152,13 +152,14 @@ if not st.session_state.analysis_result:
     st.markdown("---")
     st.markdown(
         '<div class="card">'
-        "<strong>How the Intake & Triage Workflow Operates</strong><br><br>"
-        "1. <strong>Intake:</strong> Paste raw advertisement, social media post, or forum text in the editor above.<br>"
-        "2. <strong>Pattern Triage:</strong> The analyzer inspects language patterns (account sales, card sales, KYC bypass claims, unusual payment requests).<br>"
-        "3. <strong>Entity Extraction:</strong> Structured indicators including URLs, contact phone numbers, and payment handles (e.g. UPI) are extracted.<br>"
-        "4. <strong>Case Generation:</strong> Results are automatically saved to persistent SQLite storage under a tracking ID (e.g. <code>TF-XXXXXXXX</code>).<br>"
-        "5. <strong>Human Review:</strong> Investigators can open the case file in Case Management to review evidence, change statuses, and track escalation.<br><br>"
-        "<em>Phase 1 Note: Uses deterministic pattern-matching. ML scoring, OCR, and relation intelligence will be integrated in subsequent phases.</em>"
+        "<strong>Explainable Rule-Based Detection Engine (Phase 2)</strong><br><br>"
+        "The Phase 2 engine inspects text across 5 modular detection categories:<br>"
+        "1. <strong>Financial Account or Card Sale:</strong> Solicitations offering bank accounts, credentials, or pre-activated cards.<br>"
+        "2. <strong>KYC Evasion & Verification Bypass:</strong> Claims that KYC, identity checks, or verification can be bypassed.<br>"
+        "3. <strong>Account Rental & Mule Recruitment:</strong> Offers to rent bank accounts, receive third-party funds, or earn money-forwarding commissions.<br>"
+        "4. <strong>Suspicious Financial Solicitation:</strong> Requests for OTPs, passwords, or advance upfront fees.<br>"
+        "5. <strong>Urgency, Secrecy & Unrealistic Promises:</strong> Non-disclosure pressure, artificial scarcity, or impossible guaranteed returns.<br><br>"
+        "<em>False-Positive Protection: Text discussing educational KYC guidelines, regulatory notices, or legitimate bank offers is automatically mitigated.</em>"
         "</div>",
         unsafe_allow_html=True,
     )

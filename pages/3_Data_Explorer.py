@@ -9,7 +9,7 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 
-from config import APP_NAME, CASE_STATUSES, RISK_LEVELS, COLORS
+from config import APP_NAME, CASE_STATUSES, STANDARDIZED_RISK_TIERS, COLORS
 from src.database import init_db, search_records, get_record
 from src.sample_data import seed_demo_data
 from src.ui_components import (
@@ -51,7 +51,7 @@ with f_col1:
 with f_col2:
     risk_filter = st.selectbox(
         "Risk Classification",
-        ["All"] + list(RISK_LEVELS.keys()),
+        ["All"] + STANDARDIZED_RISK_TIERS,
         key="explorer_risk_filter",
     )
 
@@ -79,12 +79,13 @@ if records:
     for r in records:
         display_rows.append({
             "Record ID": r["record_id"],
-            "Text Preview": (r["ad_text"][:85] + "…") if len(r["ad_text"]) > 85 else r["ad_text"],
-            "Risk Score": r["risk_score"],
+            "Text Preview": (r["ad_text"][:80] + "…") if len(r["ad_text"]) > 80 else r["ad_text"],
+            "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
             "Status": r["investigation_status"],
             "Matched Categories": ", ".join(r.get("matched_categories", [])) or "None",
             "URLs": len(r.get("urls", [])),
+            "Emails": len(r.get("emails", [])),
             "Phones": len(r.get("phone_numbers", [])),
             "Payment IDs": len(r.get("payment_identifiers", [])),
             "Submitted": r["submitted_at"][:16].replace("T", " "),
@@ -111,16 +112,17 @@ if records:
         export_rows.append({
             "Record ID": r["record_id"],
             "Advertisement Text": r["ad_text"],
-            "Risk Score": r["risk_score"],
+            "Risk Score": int(r["risk_score"]) if isinstance(r["risk_score"], (int, float)) else r["risk_score"],
             "Risk Level": r["risk_level"],
             "Review Required": "Yes" if r.get("review_required") else "No",
             "Review Recommendation": r.get("review_recommendation", ""),
             "Matched Categories": "; ".join(r.get("matched_categories", [])),
             "Extracted URLs": "; ".join(r.get("urls", [])),
+            "Extracted Emails": "; ".join(r.get("emails", [])),
             "Extracted Phone Numbers": "; ".join(r.get("phone_numbers", [])),
             "Extracted Payment IDs": "; ".join(r.get("payment_identifiers", [])),
             "Investigation Status": r["investigation_status"],
-            "Analysis Mode": r.get("analysis_mode", "demo"),
+            "Analysis Mode": r.get("analysis_mode", "rule_based"),
             "Is Synthetic": "Yes" if r.get("is_synthetic") else "No",
             "Submitted At": r["submitted_at"],
         })

@@ -67,7 +67,7 @@ section[data-testid="stSidebar"] .stMarkdown h1 {{
 /* ── Status / risk badges ───────────────────────────────────────── */
 .badge {{
     display: inline-block;
-    padding: 0.2rem 0.7rem;
+    padding: 0.25rem 0.75rem;
     border-radius: 4px;
     font-size: 0.75rem;
     font-weight: 600;
@@ -75,8 +75,21 @@ section[data-testid="stSidebar"] .stMarkdown h1 {{
     text-transform: uppercase;
 }}
 
-/* ── Demo banner ────────────────────────────────────────────────── */
+/* ── Engine / Demo banner ───────────────────────────────────────── */
 .demo-banner {{
+    background: rgba(6, 182, 212, 0.12);
+    border: 1px solid rgba(6, 182, 212, 0.35);
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    color: {COLORS["accent"]};
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: center;
+    letter-spacing: 1px;
+    margin-bottom: 1rem;
+}}
+
+.warning-banner {{
     background: rgba(234, 179, 8, 0.12);
     border: 1px solid rgba(234, 179, 8, 0.3);
     border-radius: 6px;
@@ -158,7 +171,7 @@ def render_sidebar() -> None:
     """Render the consistent sidebar with branding and navigation."""
     with st.sidebar:
         st.markdown(f"# {APP_NAME}")
-        st.caption(f"{APP_CATEGORY} · Platform")
+        st.caption(f"{APP_CATEGORY} · Console")
         st.markdown("---")
 
         # Navigation
@@ -175,7 +188,7 @@ def render_sidebar() -> None:
             f"""
             <div style="font-size: 0.8rem; color: {COLORS['text_secondary']}; line-height: 1.6; background: {COLORS['bg_card']}; padding: 0.75rem; border-radius: 6px; border: 1px solid {COLORS['border']};">
                 <div><span style="color: {COLORS['success']};">●</span> <strong>Status:</strong> Operational</div>
-                <div><strong>Engine:</strong> Rule-Based Demo (v0.1.0)</div>
+                <div><strong>Engine:</strong> Rule-Based Detector (Phase 2)</div>
                 <div><strong>Storage:</strong> SQLite WAL (Persistent)</div>
                 <div><strong>Environment:</strong> Local / Sandbox</div>
             </div>
@@ -188,7 +201,7 @@ def render_sidebar() -> None:
             '<div class="demo-banner">◆ DEMO DATA MODE ◆</div>',
             unsafe_allow_html=True,
         )
-        st.caption("Pattern-based scoring for demo only.")
+        st.caption("Explainable rule-based triage.")
         st.caption("Not a trained ML model.")
 
 
@@ -206,12 +219,15 @@ def render_metric_card(label: str, value: int | str, color: str | None = None) -
 
 
 def render_risk_badge(risk_level: str) -> str:
-    """Return HTML for a risk-level badge."""
-    cfg = RISK_LEVELS.get(risk_level, RISK_LEVELS["MINIMAL"])
+    """Return HTML for a risk-level badge with standardized level lookup."""
+    key = risk_level.strip().capitalize() if risk_level else "Low"
+    cfg = RISK_LEVELS.get(key, RISK_LEVELS.get(risk_level.upper(), RISK_LEVELS["Low"]))
+    label = cfg.get("label", key)
+    color = cfg.get("color", "#64748b")
     return (
-        f'<span class="badge" style="background: {cfg["color"]}20; '
-        f'color: {cfg["color"]}; border: 1px solid {cfg["color"]}40;">'
-        f'{cfg["label"]}</span>'
+        f'<span class="badge" style="background: {color}20; '
+        f'color: {color}; border: 1px solid {color}40;">'
+        f'{label}</span>'
     )
 
 
@@ -226,10 +242,10 @@ def render_status_badge(status: str) -> str:
 
 
 def render_demo_banner() -> None:
-    """Show the demo-data indicator."""
+    """Show the rule-based analyzer and preliminary triage indicator."""
     st.markdown(
-        '<div class="demo-banner">◆ DEMO ANALYSIS — Pattern-based scoring for demonstration only. '
-        'Not a trained model or validated fraud detector. ◆</div>',
+        '<div class="demo-banner">◆ EXPLAINABLE RULE-BASED DETECTION ENGINE — '
+        'Automated preliminary indicators for investigator triage. Not definitive proof of criminal activity. ◆</div>',
         unsafe_allow_html=True,
     )
 
@@ -240,14 +256,14 @@ def render_disclaimer() -> None:
         '<div class="disclaimer">'
         '<strong>Important Note for Investigators:</strong> A suspicious signal is not proof of a crime. '
         'All flagged advertisements require human review, contextual evaluation, and verified due process '
-        'before any conclusions are drawn. This platform serves as investigative decision support — it does '
+        'before any conclusions or enforcement actions are drawn. This platform serves as investigative decision support — it does '
         'not replace human judgement.</div>',
         unsafe_allow_html=True,
     )
 
 
 def render_record_detail(record: dict) -> None:
-    """Display a full record detail panel."""
+    """Display a full record detail panel with explainable evidence and extracted indicators."""
     st.markdown(f'<div class="result-header">Case Record: {record["record_id"]}</div>',
                 unsafe_allow_html=True)
 
@@ -255,13 +271,16 @@ def render_record_detail(record: dict) -> None:
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**Risk Score**")
-        st.markdown(f"### {record['risk_score']} / 100")
+        score_val = record.get("risk_score", 0)
+        # Format as int
+        score_int = int(score_val) if isinstance(score_val, (int, float)) else score_val
+        st.markdown(f"### {score_int} / 100")
     with col2:
         st.markdown("**Risk Level**")
-        st.markdown(render_risk_badge(record["risk_level"]), unsafe_allow_html=True)
+        st.markdown(render_risk_badge(record.get("risk_level", "Low")), unsafe_allow_html=True)
     with col3:
         st.markdown("**Investigation Status**")
-        st.markdown(render_status_badge(record["investigation_status"]),
+        st.markdown(render_status_badge(record.get("investigation_status", "Open")),
                     unsafe_allow_html=True)
 
     # Review Recommendation
@@ -270,9 +289,16 @@ def render_record_detail(record: dict) -> None:
         else "No Immediate Review Indicated"
     )
     is_req = record.get("review_required")
-    bg_color = "rgba(239, 68, 68, 0.12)" if is_req else "rgba(34, 197, 94, 0.12)"
-    border_color = "rgba(239, 68, 68, 0.35)" if is_req else "rgba(34, 197, 94, 0.35)"
-    text_color = "#f87171" if is_req else "#4ade80"
+    risk_lvl = record.get("risk_level", "Low").capitalize()
+    if risk_lvl == "Critical":
+        bg_color, border_color, text_color = "rgba(239, 68, 68, 0.15)", "rgba(239, 68, 68, 0.4)", "#f87171"
+    elif risk_lvl == "High":
+        bg_color, border_color, text_color = "rgba(249, 115, 22, 0.15)", "rgba(249, 115, 22, 0.4)", "#fb923c"
+    elif risk_lvl == "Medium":
+        bg_color, border_color, text_color = "rgba(234, 179, 8, 0.15)", "rgba(234, 179, 8, 0.4)", "#facc15"
+    else:
+        bg_color, border_color, text_color = "rgba(34, 197, 94, 0.15)", "rgba(34, 197, 94, 0.4)", "#4ade80"
+
     icon = "⚠️" if is_req else "✓"
 
     st.markdown(
@@ -290,7 +316,7 @@ def render_record_detail(record: dict) -> None:
     st.code(record["ad_text"], language=None)
 
     # Analysis Details
-    st.markdown('<div class="section-header">Analysis Details & Evidence</div>',
+    st.markdown('<div class="section-header">Analysis Details & Explainable Evidence</div>',
                 unsafe_allow_html=True)
 
     col_a, col_b = st.columns(2)
@@ -298,7 +324,8 @@ def render_record_detail(record: dict) -> None:
         st.markdown("**Submitted At**")
         st.write(record.get("submitted_at", "—"))
         st.markdown("**Analysis Mode**")
-        st.write(record.get("analysis_mode", "demo").upper())
+        mode = record.get("analysis_mode", "rule_based")
+        st.write(mode.upper())
         st.markdown("**Review Required**")
         st.write("Yes" if record.get("review_required") else "No")
 
@@ -309,21 +336,26 @@ def render_record_detail(record: dict) -> None:
             for c in cats:
                 st.write(f"• {c}")
         else:
-            st.write("None detected")
+            st.write("None detected (Clean/Legitimate)")
 
-    # Evidence details
-    evidence = record.get("evidence", {})
+    # Evidence details: supports both Phase 2 list format and legacy Phase 1 dict format
+    evidence = record.get("evidence", [])
     if evidence:
-        st.markdown("**Extracted Evidence Snippets**")
-        for cat_name, items in evidence.items():
-            st.markdown(f"*{cat_name}:*")
-            for item in items:
-                st.write(f"  — `{item}`")
+        st.markdown("**Explainable Evidence & Rule Matches**")
+        if isinstance(evidence, list):
+            for item in evidence:
+                st.markdown(f"• {item}")
+        elif isinstance(evidence, dict):
+            for cat_name, items in evidence.items():
+                st.markdown(f"*{cat_name}:*")
+                for item in items:
+                    st.write(f"  — `{item}`")
 
-    # Extracted indicators
+    # Extracted indicators (4 columns: URLs, Emails, Phones, Payment IDs)
     st.markdown('<div class="section-header">Extracted Contact & Payment Indicators</div>',
                 unsafe_allow_html=True)
-    ind_col1, ind_col2, ind_col3 = st.columns(3)
+    ind_col1, ind_col2, ind_col3, ind_col4 = st.columns(4)
+
     with ind_col1:
         st.markdown("**Extracted URLs**")
         urls = record.get("urls", [])
@@ -332,16 +364,27 @@ def render_record_detail(record: dict) -> None:
                 st.write(f"`{u}`")
         else:
             st.caption("None extracted")
+
     with ind_col2:
-        st.markdown("**Extracted Phone Numbers**")
+        st.markdown("**Extracted Emails**")
+        emails = record.get("emails", [])
+        if emails:
+            for em in emails:
+                st.write(f"`{em}`")
+        else:
+            st.caption("None extracted")
+
+    with ind_col3:
+        st.markdown("**Phone Numbers**")
         phones = record.get("phone_numbers", [])
         if phones:
             for p in phones:
                 st.write(f"`{p}`")
         else:
             st.caption("None extracted")
-    with ind_col3:
-        st.markdown("**Extracted Payment Identifiers**")
+
+    with ind_col4:
+        st.markdown("**Payment IDs (UPI/Crypto)**")
         pids = record.get("payment_identifiers", [])
         if pids:
             for pid in pids:
@@ -349,7 +392,7 @@ def render_record_detail(record: dict) -> None:
         else:
             st.caption("None extracted")
 
-    # Unsupported / Future Capabilities (Master Prompt Section 7)
+    # Unsupported / Future Capabilities (Section 7)
     st.markdown('<div class="section-header">Advanced Engine Capabilities (Future Phases)</div>',
                 unsafe_allow_html=True)
     f_col1, f_col2 = st.columns(2)

@@ -18,16 +18,28 @@ DATA_DIR.mkdir(exist_ok=True)
 APP_NAME = "TRACE//FIN"
 APP_TAGLINE = "Detect signals. Connect evidence. Prioritize investigations."
 APP_CATEGORY = "Financial Threat Intelligence"
-APP_VERSION = "0.1.0-phase1"
+APP_VERSION = "0.2.0-phase2"
 
-# ── Risk Levels ────────────────────────────────────────────────────────
+# ── Standardized Risk Levels (Phase 2) ─────────────────────────────────
+# Engineering thresholds:
+# Low: 0–24, Medium: 25–49, High: 50–74, Critical: 75–100
 RISK_LEVELS = {
-    "CRITICAL": {"label": "Critical", "color": "#ef4444", "min_score": 80},
-    "HIGH":     {"label": "High",     "color": "#f97316", "min_score": 60},
-    "MEDIUM":   {"label": "Medium",   "color": "#eab308", "min_score": 40},
-    "LOW":      {"label": "Low",      "color": "#22c55e", "min_score": 20},
-    "MINIMAL":  {"label": "Minimal",  "color": "#64748b", "min_score": 0},
+    "Critical": {"label": "Critical", "color": "#ef4444", "min_score": 75, "max_score": 100},
+    "High":     {"label": "High",     "color": "#f97316", "min_score": 50, "max_score": 74},
+    "Medium":   {"label": "Medium",   "color": "#eab308", "min_score": 25, "max_score": 49},
+    "Low":      {"label": "Low",      "color": "#22c55e", "min_score": 0,  "max_score": 24},
 }
+
+# Backward-compatibility aliases for legacy uppercase/minimal lookups
+RISK_LEVELS["CRITICAL"] = RISK_LEVELS["Critical"]
+RISK_LEVELS["HIGH"]     = RISK_LEVELS["High"]
+RISK_LEVELS["MEDIUM"]   = RISK_LEVELS["Medium"]
+RISK_LEVELS["LOW"]      = RISK_LEVELS["Low"]
+RISK_LEVELS["MINIMAL"]  = RISK_LEVELS["Low"]
+RISK_LEVELS["Minimal"]  = RISK_LEVELS["Low"]
+
+# Standard ordered list of risk tiers (highest to lowest)
+STANDARDIZED_RISK_TIERS = ["Critical", "High", "Medium", "Low"]
 
 # ── Investigation Statuses ─────────────────────────────────────────────
 CASE_STATUSES = ["Open", "Reviewing", "Escalated", "Closed"]
@@ -39,7 +51,8 @@ STATUS_COLORS = {
     "Closed":    "#64748b",
 }
 
-# ── Demo / Analysis Modes ─────────────────────────────────────────────
+# ── Analysis Modes ─────────────────────────────────────────────────────
+ANALYSIS_MODE_RULE_BASED = "rule_based"
 ANALYSIS_MODE_DEMO = "demo"
 
 # ── UI Design Tokens ──────────────────────────────────────────────────
