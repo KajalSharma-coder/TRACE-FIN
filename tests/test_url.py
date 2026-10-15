@@ -19,6 +19,7 @@ from src.url_fetcher import (
     safe_fetch_url,
     analyze_url,
     BLOCKED_HOSTNAMES,
+    _url_for_pinned_ip,
 )
 
 
@@ -105,6 +106,18 @@ def test_is_safe_ip_unspecified_and_multicast():
     assert is_safe_ip("224.0.0.1")[0] is False
 
 
+def test_is_safe_ip_reserved_shared_and_ipv4_mapped_internal():
+    for target in ("192.0.2.1", "198.18.0.1", "100.64.0.1", "::ffff:127.0.0.1", "::ffff:10.0.0.1"):
+        assert is_safe_ip(target)[0] is False, target
+
+
+def test_validate_url_rejects_local_name_suffixes():
+    for target in ("http://localhost/", "http://service.local/", "http://host.internal./"):
+        result = validate_url_syntax(target)
+        assert result["valid"] is False
+        assert "internal" in result["error"].lower() or "local" in result["error"].lower()
+
+
 def test_is_safe_ip_public_routable():
     # Public IPs should be deemed safe
     for pub in ["8.8.8.8", "1.1.1.1", "93.184.216.34"]:
@@ -144,6 +157,15 @@ def test_resolve_and_verify_hostname_dns_failure():
         assert "DNS resolution failed" in err
 
 
+def test_transport_url_pins_resolved_ip_and_preserves_http_host():
+    pinned, host = _url_for_pinned_ip("https://example.test:8443/path?q=1", "example.test", "93.184.216.34")
+    assert pinned == "https://93.184.216.34:8443/path?q=1"
+    assert host == "example.test:8443"
+    pinned6, host6 = _url_for_pinned_ip("https://[2606:4700:4700::1111]/", "2606:4700:4700::1111", "2606:4700:4700::1111")
+    assert pinned6.startswith("https://[2606:4700:4700::1111]/")
+    assert host6 == "[2606:4700:4700::1111]"
+
+
 def test_safe_fetch_labels_dns_failure_as_network_error_not_ssrf():
     with patch("socket.getaddrinfo", side_effect=socket.gaierror(-3, "Temporary failure in name resolution")):
         result = safe_fetch_url("http://google.com")
@@ -158,6 +180,17 @@ def test_safe_fetch_still_blocks_private_ip_as_ssrf():
     assert result["success"] is False
     assert result["failure_category"] == "ssrf_blocked"
     assert "SSRF" in result["error"]
+
+
+def test_safe_fetch_timeout_is_reported_without_suspicious_verdict():
+    import requests
+    with patch("socket.getaddrinfo", return_value=[
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+    ]), patch("requests.Session.get", side_effect=requests.Timeout):
+        result = analyze_url("https://slow.example.test/", fetch_content=True)
+    assert result["success"] is False
+    assert result["failure_category"] == "connection_timeout"
+    assert "timed out" in result["error"].lower()
 
 
 # ── 4. HTML Text Extraction ───────────────────────────────────────────
@@ -201,7 +234,7 @@ def test_safe_fetch_url_blocks_redirect_to_internal():
         mock_resp.status_code = 302
         mock_resp.headers = {"Location": "http://127.0.0.1:8000/admin"}
 
-        with patch("requests.get", return_value=mock_resp):
+        with patch("requests.Session.get", return_value=mock_resp):
             res = safe_fetch_url("https://example.com/redirect-to-internal")
             assert res["success"] is False
             assert "SSRF" in res["error"] or "blocked" in res["error"].lower()
@@ -249,11 +282,13 @@ def test_successful_url_fetch_analyzing_live_content():
         mock_resp.encoding = "utf-8"
         mock_resp.iter_content.return_value = [html_sample.encode("utf-8")]
 
-        with patch("requests.get", return_value=mock_resp):
+        with patch("requests.Session.get", return_value=mock_resp) as mock_get:
             url_res = analyze_url("https://legit-bank.example.com/offers", fetch_content=True)
             assert url_res["valid"] is True
             assert url_res["success"] is True
             assert "Personal loan offers" in url_res["extracted_text"]
+            assert mock_get.call_args.args[0] == "https://93.184.216.34/offers"
+            assert mock_get.call_args.kwargs["headers"]["Host"] == "legit-bank.example.com"
 
             # Run unified analysis on extracted text
             analysis = run_unified_analysis(

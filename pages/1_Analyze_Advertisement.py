@@ -16,13 +16,15 @@ from src.analysis_service import (
     STATUS_EMPTY_INPUT,
     STATUS_INSUFFICIENT_CONTENT,
 )
-from src.database import init_db, insert_record, get_record, generate_record_id
+from src.database import init_db, insert_record, get_record, get_all_records, generate_record_id
 from src.detector import analyze_ad, compute_unified_verdict
 from src.ml_model import predict_ad_ml, compare_rule_and_ml, get_model_metrics
 from src.hf_model import predict_ad_hf, get_hf_model_info
 from src.url_fetcher import analyze_url
+from src.browser_analysis import analyze_browser_url
 from src.document_extractor import extract_pdf_text, extract_docx_text
 from src.ocr_engine import validate_image, extract_text_ocr, is_tesseract_available
+from src.evidence_graph import build_evidence_graph, make_3d_figure
 from src.sample_data import seed_demo_data
 from src.ui_components import (
     inject_global_css, render_sidebar, render_demo_banner,
@@ -56,6 +58,10 @@ render_demo_banner()
 # ── Session state ──────────────────────────────────────────────────────
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
+if "analysis_graph_data" not in st.session_state:
+    st.session_state.analysis_graph_data = None
+if "analysis_related_records" not in st.session_state:
+    st.session_state.analysis_related_records = []
 if "ml_result" not in st.session_state:
     st.session_state.ml_result = None
 if "hf_result" not in st.session_state:
@@ -81,6 +87,8 @@ def reset_all_state() -> None:
     st.session_state.reviewed_ad_text = ""
     st.session_state.current_review_text = ""
     st.session_state.analysis_result = None
+    st.session_state.analysis_graph_data = None
+    st.session_state.analysis_related_records = []
     st.session_state.ml_result = None
     st.session_state.hf_result = None
     st.session_state.verdict_data = None
@@ -180,6 +188,40 @@ with tab_url:
         fetch_live = st.checkbox("Retrieve live website content (5s timeout, 2MB cap)", value=True, key="chk_fetch_live")
     with col_u2:
         btn_inspect_url = st.button("🌐 Safely Fetch & Inspect URL", key="btn_inspect_url", type="primary")
+
+    with st.expander("Optional offline browser analysis"):
+        st.caption("Fetches through TRACE//FIN's SSRF protections, then renders escaped extracted text locally with page scripts and network requests disabled.")
+        run_browser_analysis = st.button("🧭 Analyze with offline browser", key="btn_browser_url")
+
+    if run_browser_analysis:
+        if not input_url or not input_url.strip():
+            st.error("Please enter a valid HTTP/HTTPS URL.")
+        else:
+            with st.spinner("Safely fetching and analyzing the page…"):
+                browser_result = analyze_browser_url(input_url.strip())
+            st.markdown("**Browser analysis**")
+            st.write(f"URL: `{browser_result['url']}`")
+            st.write(f"Final URL: `{browser_result['final_url']}` · Redirects: {browser_result['redirects']}")
+            st.write(f"Page title: {browser_result['title'] or '(no title)'}")
+            if browser_result.get("fetch_error"):
+                st.warning(f"Page fetch unavailable: {browser_result['fetch_error']}")
+            if browser_result.get("browser_error"):
+                st.caption(browser_result["browser_error"])
+            url_model = browser_result.get("url_model", {})
+            if url_model.get("available"):
+                st.write(f"**Phishing URL model:** {url_model['prediction']} ({url_model['phishing_probability']:.1%})")
+            elif url_model.get("error"):
+                st.caption(f"Phishing URL model unavailable: {url_model['error']}")
+            ad = browser_result["advertisement_analysis"]
+            st.write(f"**Financial advertisement assessment:** {ad.get('final_verdict', 'UNSCORED')} · score {ad.get('final_score') if ad.get('final_score') is not None else 'unavailable'}")
+            st.caption("URL phishing classification and financial advertisement assessment are separate signals.")
+            if ad.get("evidence"):
+                st.markdown("**Advertisement evidence**")
+                for item in ad["evidence"]:
+                    st.write(f"• {item}")
+            if browser_result.get("visible_text"):
+                with st.expander("Extracted visible webpage text"):
+                    st.text(browser_result["visible_text"][:20_000])
 
     if btn_inspect_url:
         if not input_url or not input_url.strip():
@@ -431,6 +473,10 @@ if analyze_clicked:
 
         # Save to database with multi-engine attributes via canonical persistence service
         saved_id = persist_analysis_record(unified_res)
+        try:
+            st.session_state.analysis_related_records = get_all_records()
+        except Exception:
+            st.session_state.analysis_related_records = []
 
         st.session_state.analysis_result = {
             "risk_score": unified_res["rule_score"],
@@ -443,6 +489,7 @@ if analyze_clicked:
             "phone_numbers": unified_res.get("phone_numbers", []),
             "payment_identifiers": unified_res.get("payment_identifiers", []),
         }
+        st.session_state.analysis_graph_data = {**unified_res, "record_id": saved_id}
         st.session_state.ml_result = {
             "available": unified_res.get("engine_status", {}).get("tfidf") == "available",
             "error": unified_res.get("engine_errors", {}).get("tfidf"),
@@ -524,6 +571,105 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
         st.markdown("---")
         st.markdown('<div class="section-header">3. Threat Analysis Dossier & Unified Verdict</div>',
                     unsafe_allow_html=True)
+
+        graph_data = build_evidence_graph(
+            st.session_state.get("analysis_graph_data") or rule_res,
+            text=st.session_state.get("reviewed_ad_text", ""),
+            source_type=source_info.get("type", "Advertisement text"),
+            source_meta=source_info,
+            related_records=st.session_state.get("analysis_related_records", []),
+        )
+        graph_nodes = graph_data["nodes"]
+        category_options = sorted({node["type"] for node in graph_nodes})
+        control_col, risk_col = st.columns([1.7, 1])
+        with control_col:
+            selected_categories = st.multiselect(
+                "Evidence categories", category_options, default=category_options,
+                key=f"graph_categories_{record_id}",
+            )
+        with risk_col:
+            high_risk_only = st.toggle("High-risk evidence only", key=f"graph_high_only_{record_id}")
+        visible_nodes = [node for node in graph_nodes
+                         if node["type"] in selected_categories
+                         and (not high_risk_only or node["risk"] == "high")]
+        if graph_data["central_id"] not in {node["id"] for node in visible_nodes}:
+            visible_nodes.insert(0, next(node for node in graph_nodes if node["id"] == graph_data["central_id"]))
+        visible_ids = {node["id"] for node in visible_nodes}
+        visible_edges = [edge for edge in graph_data["edges"]
+                         if edge["source"] in visible_ids and edge["target"] in visible_ids]
+        visible_graph = {**graph_data, "nodes": visible_nodes, "edges": visible_edges}
+
+        evidence_col, summary_col = st.columns([2.15, 1])
+        with evidence_col:
+            st.markdown("#### Interactive 3D evidence graph")
+            st.caption("Drag to rotate · scroll to zoom · right-drag to pan · select a node for its evidence details.")
+            selected_point_ids = set()
+            prior_selection = st.session_state.get(f"graph_selection_{record_id}")
+            if prior_selection:
+                selected_point_ids.add(prior_selection)
+                selected_node = next((n for n in graph_nodes if n["id"] == prior_selection), None)
+                if selected_node:
+                    selected_point_ids.update(selected_node["related_ids"])
+            figure = make_3d_figure(visible_graph, selected_point_ids)
+            try:
+                from streamlit_plotly_events import plotly_events
+                clicked = plotly_events(
+                    figure, click_event=True, select_event=False, hover_event=False,
+                    override_height=610, key=f"evidence_graph_{record_id}",
+                )
+            except ImportError:
+                st.plotly_chart(figure, key=f"evidence_graph_{record_id}",
+                                config={"displaylogo": False, "scrollZoom": True,
+                                        "modeBarButtonsToAdd": ["resetCameraDefault3d"]})
+                st.caption("Node click details are available after installing streamlit-plotly-events.")
+                clicked = []
+            if clicked:
+                point = clicked[-1]
+                node_trace = len(figure.data) - 1
+                point_index = point.get("pointIndex", point.get("pointNumber"))
+                selected_id = None
+                if point.get("curveNumber") == node_trace and isinstance(point_index, int):
+                    if 0 <= point_index < len(visible_nodes):
+                        selected_id = visible_nodes[point_index]["id"]
+                if selected_id in visible_ids and selected_id != st.session_state.get(f"graph_selection_{record_id}"):
+                    st.session_state[f"graph_selection_{record_id}"] = selected_id
+                    st.rerun()
+            st.caption("Legend: cyan = advertisement · blue = URL/domain · purple = verification · amber = contact/payment · red = high-risk evidence · green = rule match.")
+        with summary_col:
+            st.markdown("#### Risk assessment")
+            st.metric("Advertisement classification", graph_data["classification"])
+            if graph_data["risk_score"] is not None:
+                st.metric("Overall risk score", f"{graph_data['risk_score']}/100")
+            else:
+                st.metric("Overall risk score", "Unavailable")
+            st.write(f"Evidence nodes: **{graph_data['evidence_count']}** · High-risk: **{graph_data['high_risk_count']}**")
+            url_results = graph_data.get("url_models") or []
+            if url_results:
+                st.markdown("**URL phishing model**")
+                for item in url_results:
+                    prediction = item.get("prediction") or ("Unavailable" if not item.get("available") else "No result")
+                    st.write(f"{prediction}" + (f" — {item.get('error')}" if item.get("error") else ""))
+            else:
+                st.caption("URL phishing model: no URL model result for this analysis.")
+            st.markdown(f"**Advertisement text analysis:** {classification if (classification := graph_data['classification']) else 'Unavailable'}")
+            if source_info.get("type") == "Image OCR":
+                st.caption("Image: OCR text was analyzed. Fake-logo and visual authenticity checks are unavailable.")
+            picked_id = st.session_state.get(f"graph_selection_{record_id}")
+            picked_node = next((node for node in graph_nodes if node["id"] == picked_id), None)
+            if picked_node:
+                st.markdown("---")
+                st.markdown(f"**{picked_node['label']}**")
+                st.write(picked_node["value"])
+                st.caption(f"Source: {picked_node['source']} · Risk: {picked_node['risk'].title()}")
+                st.caption(picked_node["reason"])
+                if picked_node.get("confidence") is not None:
+                    st.caption(f"Model score: {picked_node['confidence']:.1%} (not a calibrated fraud probability)")
+
+        with st.expander("Evidence list", expanded=False):
+            for node in visible_nodes:
+                st.markdown(f"**{node['label']}** · `{node['risk']}`  \n{node['value']}  \nSource: {node['source']} · {node['reason']}")
+
+        st.markdown("---")
 
         # ── 1. One Prominent Final Risk Result Card ───────────────────────
         st.markdown(
@@ -735,6 +881,8 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
         with nav_col2:
             if st.button("🔍 Analyze Another Ad", use_container_width=True):
                 st.session_state.analysis_result = None
+                st.session_state.analysis_graph_data = None
+                st.session_state.analysis_related_records = []
                 st.session_state.ml_result = None
                 st.session_state.hf_result = None
                 st.session_state.verdict_data = None
@@ -746,6 +894,7 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
 # ── Empty state guidance ──────────────────────────────────────────────
 if not st.session_state.analysis_result:
     st.markdown("---")
+    st.info("No completed advertisement analysis yet. Submit reviewed text above to generate its evidence graph and risk summary.")
     st.markdown(
         '<div class="card">'
         "<strong>Dual-Engine Threat Intelligence Architecture</strong><br><br>"

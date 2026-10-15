@@ -8,7 +8,8 @@ import streamlit as st
 from config import APP_NAME, APP_TAGLINE, APP_CATEGORY, COLORS, RISK_LEVELS, STANDARDIZED_RISK_TIERS
 from src.auth import (
     AuthStoreError, DuplicateAccountError, authenticate_user, create_user,
-    init_auth_store, set_authenticated_session,
+    create_auth_session, init_auth_store, set_authenticated_session,
+    restore_authenticated_session,
 )
 from src.dashboard import load_dashboard_snapshot
 from src.database import init_db, get_all_records
@@ -204,6 +205,7 @@ def _signup_callback() -> None:
             state.get("signup_name", ""), state.get("signup_email", ""),
             state.get("signup_password", ""), state.get("signup_confirm", ""),
         )
+        state["_auth_cookie_pending"] = create_auth_session(identity["id"])
         set_authenticated_session(state, identity)
         state.pop("auth_view", None)
         state.pop("auth_error", None)
@@ -224,6 +226,7 @@ def _login_callback() -> None:
             state.get("login_email", ""), state.get("login_password", "")
         )
         if identity:
+            state["_auth_cookie_pending"] = create_auth_session(identity["id"])
             set_authenticated_session(state, identity)
             state.pop("auth_error", None)
             st.query_params.clear()
@@ -290,7 +293,14 @@ except AuthStoreError:
     st.error("TRACE//FIN cannot open its local account store. Check that the data directory is writable.")
     st.stop()
 
-identity = st.session_state.get("auth_user")
+try:
+    identity = restore_authenticated_session()
+    # If logout originated on the dashboard, this script is already the target
+    # homepage; consume the one-shot redirect marker before another page guard.
+    st.session_state.pop("_logout_redirect", None)
+except AuthStoreError:
+    st.error("Local account storage is unavailable. Access is paused until it can be reached.")
+    st.stop()
 if identity:
     try:
         from src.auth import get_user_by_id, clear_authenticated_session

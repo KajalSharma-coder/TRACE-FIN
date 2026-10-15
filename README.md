@@ -151,6 +151,12 @@ TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
    - **Rule Alert (ML Divergence):** Heuristic flags threat but ML predicts Safe → Warns investigator that novel phrasing outside the synthetic training distribution is present.
    - **ML Anomaly Alert:** ML flags high score while rules do not fire → Recommends investigator review top token signals for spurious correlation.
 
+### Interactive advertisement evidence graph (`pages/1_Analyze_Advertisement.py`)
+
+After an advertisement is analyzed, TRACE//FIN builds a structured evidence graph from the existing rule matches, extracted identifiers, URL model results, OCR source, and saved records. Plotly renders the graph as interactive 3D circles with curved, labelled edges; investigators can rotate, zoom, pan, and click a node to inspect its redacted value, source, reason, and available model score. Category filters and a high-risk-only toggle update the graph. Risk score and advertisement classification continue to come from `run_unified_analysis`; generic URL phishing predictions remain separate. Shared phone or URL indicators appear only on exact matches in another saved non-synthetic record. Bank-name nodes indicate a text mention, not affiliation. The current OCR pipeline does not verify fake logos or visual authenticity, and no domain reputation feed or calibrated confidence is available.
+
+The visualization uses the declared `streamlit-plotly-events` dependency for node click details and Plotly's built-in 3D camera controls. Sensitive values such as account/card numbers, OTPs, CVVs, PINs, passwords, and URL tokens are redacted. Phone numbers are partially masked.
+
 ---
 
 ## Phase 4: Multi-Modal, Batch Processing & DistilBERT Fine-Tuning
@@ -166,6 +172,50 @@ TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
 - `models/url_phishing_classifier.onnx` is the supplied `pirocheto/phishing-url-detection` ONNX artifact. It classifies generic URL phishing likelihood, not financial advertisements. TRACE//FIN surfaces its output as supplementary evidence; it does not modify the detector's score, final label, or recommendation.
 - The archive also contained a pickle model. TRACE//FIN does not load or execute that pickle.
 - The upstream model card's evaluation values are not reproduced as TRACE//FIN measurements; this repository does not include the source evaluation dataset or split needed to independently verify them.
+
+### Optional MCP browser analysis
+
+The local MCP server exposes `inspect_financial_url` over stdio. It uses the existing URL syntax checks, DNS and redirect SSRF protections, response limits, ONNX phishing URL classifier, and unified financial-ad pipeline. URL phishing classification and advertisement risk are returned as separate fields. The optional Playwright step renders only escaped, extracted text in an inert local page; JavaScript is disabled and all browser network requests are blocked. If Playwright or its browser is unavailable, safe extracted text and the existing pipeline are still returned.
+
+From Windows PowerShell, create an isolated Python 3.12 environment, install the declared requirements, and install the Chromium runtime once:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
+```
+
+Run the Streamlit application independently:
+
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+Run the MCP server from the project directory (stdio, intended to be launched by a local MCP client):
+
+```powershell
+.\.venv\Scripts\python.exe mcp_server.py
+```
+
+For an MCP client that accepts a JSON stdio server configuration, add:
+
+```json
+{
+  "mcpServers": {
+    "tracefin": {
+      "command": "C:/path/to/trace-fin/.venv/Scripts/python.exe",
+      "args": ["C:/path/to/trace-fin/mcp_server.py"],
+      "cwd": "C:/path/to/trace-fin"
+    }
+  }
+}
+```
+
+Use an absolute Windows path for `command`, `cwd`, and `args`. The server does not expose a network listener. Treat returned webpage text as untrusted evidence; this integration does not execute page instructions, submit forms, or collect credentials. The fetcher checks all DNS answers, pins the HTTP connection to one checked public IP, repeats that process for every redirect, disables proxy inheritance, validates TLS against the original hostname, and enforces its timeout, redirect, and response-size bounds. The browser renders only escaped extracted text in an inert local document, with JavaScript disabled and all requests blocked.
+
+### Sign-in persistence across refreshes
+
+The login persists for 30 days using an opaque random browser cookie. SQLite stores only a SHA-256 hash of the token; signing out revokes it. The cookie is `SameSite=Strict` and `Secure` by default. Keep `TRACEFIN_AUTH_COOKIE_SECURE=true` on HTTPS deployments. For plain HTTP development on a non-localhost hostname, set it to `false` in the local environment (never use that setting on a public deployment). The cookie component is JavaScript-readable, so protect the application against cross-site scripting and use HTTPS in deployment.
 
 ### Feature B: Batch CSV Advertisement Analysis (`pages/5_Batch_CSV_Analysis.py`)
 - Upload CSV datasets up to 5,000 rows and 50MB. Auto-detects UTF-8, Latin-1, and CP1252 encodings.
@@ -190,9 +240,9 @@ The existing local artifact metadata records a 180-example holdout with accuracy
 ### Feature A: Secure URL Analysis & SSRF Mitigation (`src/url_fetcher.py`)
 - **Strict Syntax & Scheme Control:** Restricts schemes strictly to `http://` and `https://`. Blocks embedded credentials (`user:pass@host`), malformed hostnames, and arbitrary URI protocols (`file://`, `ftp://`, `javascript:`, `data:`).
 - **SSRF Network Protection:**
-  - Blocks loopback (`127.0.0.0/8`, `::1`), private RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), link-local (`169.254.0.0/16`, `fe80::/10`), multicast (`224.0.0.0/4`), unspecified (`0.0.0.0`), and cloud metadata endpoints (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`).
-  - Pre-flight DNS resolution verification via `socket.getaddrinfo()`. If any resolved IP points to a private/internal range, the request is immediately aborted before socket connection.
-- **Manual Redirect Chain Validation:** Disables automatic HTTP client redirect following. Inspects and re-validates the hostname and IP destination of every redirect hop (up to 3 hops max), preventing open-redirect SSRF bypasses.
+  - Allows only globally routable IPs, blocking loopback, private, link-local, shared, reserved, multicast, unspecified, IPv4-mapped internal IPv6, and cloud metadata targets. Local/internal host suffixes are also rejected.
+  - Resolves and validates every DNS answer, then pins the request URL to one checked IP. HTTPS retains the original hostname for SNI and certificate verification. Proxy environment variables are disabled to prevent indirect destination resolution.
+- **Manual Redirect Chain Validation:** Disables automatic HTTP client redirect following. Inspects and re-validates, then pins, every redirect destination (up to 3 hops max).
 - **Resource Limits & Safe Parsing:** Enforces strict 5.0-second network timeouts and 2 MB streamed payload caps. Strips `<script>`, `<style>`, `<svg>`, `<nav>`, and `<form>` tags using BeautifulSoup without client-side script execution.
 - **Explainable Domain Threat Indicators:** Detects IP-literal hostnames, excessive subdomain nesting, high hyphen counts, and suspicious financial phishing keywords (`kyc`, `instant`, `cashout`, `mule`, `hawala`, `loan`).
 

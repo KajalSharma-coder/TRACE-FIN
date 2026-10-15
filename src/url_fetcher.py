@@ -73,9 +73,11 @@ def is_safe_ip(ip_str: str) -> Tuple[bool, Optional[str]]:
     if ip.is_unspecified:
         return False, f"Unspecified address ({ip_str}) blocked."
 
-    # Specific metadata addresses
-    if str(ip) in BLOCKED_HOSTNAMES:
-        return False, f"Cloud metadata endpoint ({ip_str}) blocked (SSRF defense)."
+    # Restrict connections to globally routable unicast. In particular this
+    # also rejects shared CGNAT and special-use ranges often missed by
+    # private/link-local checks.
+    if not ip.is_global:
+        return False, f"Non-public or special-use address ({ip_str}) blocked (SSRF defense)."
 
     return True, None
 
@@ -132,7 +134,11 @@ def validate_url_syntax(url_str: str) -> Dict[str, Any]:
         res["error"] = "Missing or invalid hostname in URL."
         return res
 
-    hostname_clean = hostname.lower()
+    hostname_clean = hostname.lower().rstrip(".")
+
+    if hostname_clean == "localhost" or hostname_clean.endswith((".localhost", ".local", ".internal")):
+        res["error"] = f"Local or internal hostname '{hostname_clean}' is prohibited (SSRF defense)."
+        return res
 
     # Check for blocked cloud metadata hostnames directly
     if hostname_clean in BLOCKED_HOSTNAMES:
@@ -217,6 +223,20 @@ def resolve_and_verify_hostname(hostname: str, port: int = 443) -> Tuple[bool, L
             return False, resolved_ips, f"Host '{hostname}' resolved to unsafe address {ip_str}: {reason}"
 
     return True, resolved_ips, None
+
+
+def _url_for_pinned_ip(url: str, hostname: str, ip_address: str) -> Tuple[str, str]:
+    """Return a transport URL using the checked IP plus the correct Host header."""
+    parsed = urllib.parse.urlsplit(url)
+    rendered_ip = f"[{ip_address}]" if ":" in ip_address else ip_address
+    port = parsed.port
+    netloc = rendered_ip if port is None else f"{rendered_ip}:{port}"
+    host_header = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    if port is not None and port != default_port:
+        host_header = f"{host_header}:{port}"
+    pinned = urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path or "/", parsed.query, ""))
+    return pinned, host_header
 
 
 def _is_ssrf_rejection(reason: Optional[str]) -> bool:
@@ -326,15 +346,34 @@ def safe_fetch_url(
         # 3. Perform request with manual redirect handling and streaming body
         try:
             import requests
+            from requests.adapters import HTTPAdapter
+
+            # Connect to one of the exact addresses that passed is_safe_ip.
+            # Keeping the original hostname for Host and TLS SNI/certificate
+            # verification avoids a second DNS lookup inside requests/urllib3.
+            pinned_ip = ips[0]
+            transport_url, host_header = _url_for_pinned_ip(current_url, hostname, pinned_ip)
+
+            class PinnedIPAdapter(HTTPAdapter):
+                def init_poolmanager(self, connections, maxsize, block=False, **pool_kwargs):
+                    if syntax_res["scheme"] == "https":
+                        pool_kwargs["assert_hostname"] = hostname
+                        pool_kwargs["server_hostname"] = hostname
+                    return super().init_poolmanager(connections, maxsize, block, **pool_kwargs)
+
+            session = requests.Session()
+            session.trust_env = False
+            session.mount(f"{syntax_res['scheme']}://", PinnedIPAdapter())
 
             req_headers = {
                 "User-Agent": "TRACE-FIN-ThreatIntel/1.0 (+https://github.com/montylr/trace-fin; investigator-triage)",
                 "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9",
                 "Accept-Language": "en-US,en;q=0.5",
+                "Host": host_header,
             }
 
-            resp = requests.get(
-                current_url,
+            resp = session.get(
+                transport_url,
                 headers=req_headers,
                 timeout=timeout_seconds,
                 allow_redirects=False,
@@ -348,6 +387,7 @@ def safe_fetch_url(
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get("Location")
                 if not location:
+                    resp.close()
                     result["error"] = f"HTTP {resp.status_code} redirect received with no Location header."
                     return result
 
@@ -359,9 +399,12 @@ def safe_fetch_url(
                 })
 
                 if hop >= max_redirects:
+                    resp.close()
                     result["error"] = f"Exceeded maximum redirect limit ({max_redirects} hops)."
                     return result
 
+                resp.close()
+                session.close()
                 current_url = next_url
                 continue
 
@@ -395,6 +438,8 @@ def safe_fetch_url(
             result["title"] = title
             result["extracted_text"] = clean_text
             result["success"] = True
+            resp.close()
+            session.close()
 
             if not clean_text:
                 result["warnings"].append("Web page returned empty or non-textual content.")
@@ -402,18 +447,34 @@ def safe_fetch_url(
             return result
 
         except requests.exceptions.Timeout:
+            try:
+                session.close()
+            except UnboundLocalError:
+                pass
             result["failure_category"] = "connection_timeout"
             result["error"] = f"Connection timed out after {timeout_seconds} seconds."
             return result
         except requests.exceptions.SSLError as ssl_err:
+            try:
+                session.close()
+            except UnboundLocalError:
+                pass
             result["failure_category"] = "tls_error"
             result["error"] = f"TLS/SSL certificate error: {ssl_err}"
             return result
         except requests.exceptions.ConnectionError as conn_err:
+            try:
+                session.close()
+            except UnboundLocalError:
+                pass
             result["failure_category"] = "connection_failed"
             result["error"] = f"Failed to connect to host '{hostname}': {conn_err}"
             return result
         except Exception as exc:
+            try:
+                session.close()
+            except UnboundLocalError:
+                pass
             result["failure_category"] = "fetch_error"
             result["error"] = f"Unexpected fetch error: {exc}"
             return result
@@ -484,6 +545,7 @@ def analyze_url(url_str: str, fetch_content: bool = True) -> Dict[str, Any]:
         "hostname": syntax_res["hostname"],
         "title": fetch_res.get("title", ""),
         "extracted_text": fetch_res.get("extracted_text", ""),
+        "redirect_history": fetch_res.get("redirect_history", []),
         "status_code": fetch_res.get("status_code"),
         "bytes_downloaded": fetch_res.get("bytes_downloaded", 0),
         "resolved_ips": fetch_res.get("resolved_ips", []),

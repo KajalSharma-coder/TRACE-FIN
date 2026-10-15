@@ -7,10 +7,13 @@ from src.auth import (
     DuplicateAccountError,
     authenticate_user,
     clear_authenticated_session,
+    create_auth_session,
     create_user,
     get_user_by_id,
+    get_user_by_auth_session,
     init_auth_store,
     password_hash_for_testing,
+    revoke_auth_session,
     set_authenticated_session,
 )
 
@@ -63,6 +66,24 @@ def test_user_session_revalidation_and_missing_store_error(tmp_path):
         init_auth_store(broken / "file")
 
 
+def test_persistent_auth_token_is_hashed_validated_and_revocable(tmp_path):
+    db = tmp_path / "accounts.sqlite3"
+    user = create_user("Analyst", "analyst@example.org", "long enough password",
+                       "long enough password", db)
+    token = create_auth_session(user["id"], db)
+    assert get_user_by_auth_session(token, db) == user
+    assert get_user_by_auth_session("not-a-real-token", db) is None
+
+    import sqlite3
+    with sqlite3.connect(db) as conn:
+        stored_tokens = [row[0] for row in conn.execute("SELECT token_hash FROM local_auth_sessions")]
+    assert token not in stored_tokens
+    assert len(stored_tokens) == 1
+
+    revoke_auth_session(token, db)
+    assert get_user_by_auth_session(token, db) is None
+
+
 def test_public_homepage_and_login_route_are_available_without_auth():
     from streamlit.testing.v1 import AppTest
 
@@ -92,8 +113,12 @@ def test_signup_login_shell_establishes_session_and_logout_clears_it(tmp_path, m
     from pathlib import Path
     from streamlit.testing.v1 import AppTest
     import src.auth as auth_module
+    import src.database as database_module
 
     monkeypatch.setattr(auth_module, "DB_PATH", tmp_path / "accounts.sqlite3")
+    monkeypatch.setattr(database_module, "DB_PATH", tmp_path / "records.sqlite3")
+    monkeypatch.setattr(database_module, "get_database_url", lambda: None)
+    database_module.reset_engine()
     app_path = Path(__file__).resolve().parents[1] / "app.py"
     app = AppTest.from_file(app_path).run()
     app.query_params["auth"] = "signup"
@@ -108,6 +133,8 @@ def test_signup_login_shell_establishes_session_and_logout_clears_it(tmp_path, m
     assert any("Overview dashboard" in (item.value or "") for item in app.title)
     assert "signup_password" not in app.session_state
     assert "signup_confirm" not in app.session_state
+    app.switch_page("pages/5_Batch_CSV_Analysis.py").run()
+    assert any("Batch CSV Advertisement Analysis" in (item.value or "") for item in app.markdown)
     app.button(key="tracefin_logout").click().run()
     assert "auth_user" not in app.session_state
     assert "signup_password" not in app.session_state

@@ -234,8 +234,12 @@ section[data-testid="stSidebar"] .sidebar-model-note {{ color:#758b99; font-size
 # ── Sidebar ────────────────────────────────────────────────────────────
 
 def _logout_callback() -> None:
-    from src.auth import clear_authenticated_session
+    from src.auth import clear_authenticated_session, revoke_auth_session
+    token = st.session_state.get("auth_token")
+    revoke_auth_session(token)
     clear_authenticated_session(st.session_state)
+    st.session_state["_auth_cookie_delete"] = True
+    st.session_state["_logout_redirect"] = True
     st.query_params.clear()
 
 

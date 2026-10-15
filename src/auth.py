@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import os
+import secrets
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -13,6 +17,8 @@ from config import DB_PATH
 
 _PASSWORDS = PasswordHasher()
 _EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+AUTH_COOKIE_NAME = "tracefin_session"
+AUTH_SESSION_DAYS = 30
 
 
 class AuthStoreError(RuntimeError):
@@ -47,6 +53,16 @@ def init_auth_store(db_path: str | Path | None = None) -> None:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )"""
             )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS local_auth_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES local_users(id) ON DELETE CASCADE,
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+            conn.execute("DELETE FROM local_auth_sessions WHERE expires_at <= ?",
+                         (datetime.now(timezone.utc).isoformat(),))
     except sqlite3.Error as exc:
         raise AuthStoreError("Local account storage is unavailable.") from exc
 
@@ -118,6 +134,91 @@ def get_user_by_id(user_id: int, db_path: str | Path | None = None) -> dict | No
         raise AuthStoreError("Local account storage is unavailable.") from exc
 
 
+def create_auth_session(user_id: int, db_path: str | Path | None = None) -> str:
+    """Create an opaque browser token; only its SHA-256 digest is stored."""
+    init_auth_store(db_path)
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires = (datetime.now(timezone.utc) + timedelta(days=AUTH_SESSION_DAYS)).isoformat()
+    try:
+        with _connect(db_path) as conn:
+            conn.execute("INSERT INTO local_auth_sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
+                         (digest, user_id, expires))
+        return token
+    except sqlite3.Error as exc:
+        raise AuthStoreError("Local account storage is unavailable.") from exc
+
+
+def get_user_by_auth_session(token: str, db_path: str | Path | None = None) -> dict | None:
+    """Validate an unguessable, expiring browser token against SQLite."""
+    if not isinstance(token, str) or not token or len(token) > 256:
+        return None
+    init_auth_store(db_path)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    try:
+        with _connect(db_path) as conn:
+            row = conn.execute(
+                """SELECT u.id,u.name,u.email FROM local_auth_sessions s
+                   JOIN local_users u ON u.id=s.user_id
+                   WHERE s.token_hash=? AND s.expires_at>?""",
+                (digest, datetime.now(timezone.utc).isoformat()),
+            ).fetchone()
+        return dict(row) if row else None
+    except sqlite3.Error as exc:
+        raise AuthStoreError("Local account storage is unavailable.") from exc
+
+
+def revoke_auth_session(token: str | None, db_path: str | Path | None = None) -> None:
+    if not isinstance(token, str) or not token or len(token) > 256:
+        return
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    try:
+        with _connect(db_path) as conn:
+            conn.execute("DELETE FROM local_auth_sessions WHERE token_hash=?", (digest,))
+    except sqlite3.Error as exc:
+        raise AuthStoreError("Local account storage is unavailable.") from exc
+
+
+def restore_authenticated_session() -> dict | None:
+    """Restore login from the browser cookie after Streamlit creates a new session."""
+    import streamlit as st
+    import extra_streamlit_components as stx
+
+    state = st.session_state
+    manager = stx.CookieManager(key="tracefin_auth_cookie")
+    if state.pop("_auth_cookie_delete", False):
+        try:
+            manager.delete(AUTH_COOKIE_NAME, key="tracefin_auth_cookie_delete")
+        except KeyError:
+            # CookieManager raises when AppTest or a first page load has no cookie map yet.
+            pass
+        state.pop("auth_token", None)
+    pending = state.pop("_auth_cookie_pending", None)
+    if pending:
+        manager.set(AUTH_COOKIE_NAME, pending, max_age=AUTH_SESSION_DAYS * 24 * 60 * 60,
+                    path="/", secure=os.getenv("TRACEFIN_AUTH_COOKIE_SECURE", "true").lower()
+                    in {"1", "true", "yes"}, same_site="strict")
+        state["auth_token"] = pending
+    token = state.get("auth_token") or manager.get(AUTH_COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        user = get_user_by_auth_session(token)
+    except AuthStoreError:
+        raise
+    if user is None:
+        try:
+            manager.delete(AUTH_COOKIE_NAME, key="tracefin_auth_cookie_delete")
+        except KeyError:
+            pass
+        state.pop("auth_token", None)
+        state.pop("auth_user", None)
+        return None
+    set_authenticated_session(state, user)
+    state["auth_token"] = token
+    return user
+
+
 def set_authenticated_session(session_state, user: dict) -> None:
     """Store only non-secret identity fields in Streamlit's session state."""
     session_state["auth_user"] = {
@@ -134,7 +235,17 @@ def require_authenticated_user() -> bool:
     """Protect a Streamlit page and revalidate its local account session."""
     import streamlit as st
 
+    if st.session_state.pop("_logout_redirect", False):
+        st.switch_page("app.py")
+        return False
+
     identity = st.session_state.get("auth_user")
+    if not identity:
+        try:
+            identity = restore_authenticated_session()
+        except AuthStoreError:
+            st.error("Local account storage is unavailable. Access is paused until it can be reached.")
+            return False
     if not isinstance(identity, dict) or not identity.get("id"):
         from src.ui_components import inject_global_css
         inject_global_css()
