@@ -25,6 +25,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from src.auth import require_authenticated_user
+if not require_authenticated_user():
+    st.stop()
+
 init_db()
 seed_demo_data()
 inject_global_css()

@@ -1,28 +1,222 @@
 """
-TRACE//FIN — SQLite Database Layer
-All database operations are isolated here. Uses parameterized queries
-and JSON serialization for list/dict fields.
+TRACE//FIN — Enterprise Database Layer (PostgreSQL / Neon & Multi-Dialect)
+Provides a secure, robust database interface powered by SQLAlchemy 2.0 and Psycopg 3.
+Supports Neon-hosted PostgreSQL as the primary persistent database with connection pooling,
+SSL, transaction safety, SQL injection protection, and idempotent schema migrations.
+Seamlessly supports isolated testing environments and local fallback.
 """
 
-import json
-import sqlite3
-import uuid
 from datetime import datetime, timezone
+import json
+import logging
+import os
 from pathlib import Path
+import sys
 from typing import Any
+import uuid
+
+from sqlalchemy import (
+    Column,
+    Float,
+    Index,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    and_,
+    create_engine,
+    func,
+    insert,
+    inspect,
+    or_,
+    select,
+    text,
+    update,
+)
+from sqlalchemy.pool import StaticPool
 
 from config import DB_PATH, CASE_STATUSES
 
+logger = logging.getLogger("tracefin.database")
 
-def _connect() -> sqlite3.Connection:
-    """Return a connection with row-factory enabled."""
-    DB_PATH.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+# ── Global Engine State ────────────────────────────────────────────────
+_engine = None
+_current_engine_target = None
 
+
+# ── URL Resolution & Credential Security ───────────────────────────────
+
+def mask_db_url(url: str | None) -> str:
+    """Safely redact credentials from database URL for logging, UI, and diagnostics."""
+    if not url:
+        return "<not configured>"
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        parsed = urlsplit(url)
+        if parsed.password:
+            netloc = f"{parsed.username or ''}:*****@{parsed.hostname or ''}"
+            if parsed.port:
+                netloc += f":{parsed.port}"
+            return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+        return url
+    except Exception:
+        return "<configured>"
+
+
+def is_testing_environment() -> bool:
+    """Detect whether code is executing under pytest test runner."""
+    return ("pytest" in sys.modules) or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+def get_database_url() -> str | None:
+    """
+    Resolve DATABASE_URL with safe precedence:
+    1. For automated unit tests without explicit TEST_DATABASE_URL: None (triggers isolated SQLite)
+    2. Primary environment variable: os.environ['DATABASE_URL']
+    3. Streamlit secrets: st.secrets['DATABASE_URL']
+    4. Local development file: .env
+    """
+    if is_testing_environment():
+        test_url = os.environ.get("TEST_DATABASE_URL")
+        if test_url and test_url.strip():
+            return test_url.strip()
+        return None
+
+    # 1. Primary environment variable
+    env_url = os.environ.get("DATABASE_URL")
+    if env_url and env_url.strip():
+        return env_url.strip()
+
+    # 2. Streamlit secrets (if available in Streamlit runtime)
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
+            val = st.secrets["DATABASE_URL"]
+            if val and str(val).strip():
+                return str(val).strip()
+    except Exception:
+        pass
+
+    # 3. Local .env file
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if env_path.exists():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("DATABASE_URL=") and not line.startswith("#"):
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            return val
+        except Exception:
+            pass
+
+    return None
+
+
+def normalize_db_url(raw_url: str) -> str:
+    """Ensure PostgreSQL URLs utilize the psycopg 3 driver for SQLAlchemy."""
+    url = raw_url.strip()
+    if url.startswith("postgres://"):
+        return "postgresql+psycopg://" + url[len("postgres://"):]
+    if url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
+        return "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
+# ── Engine Lifecycle & Connection Pooling ─────────────────────────────
+
+def create_app_engine(url: str, is_sqlite: bool = False):
+    """
+    Create a SQLAlchemy Engine with connection pool parameters tuned for Neon or SQLite.
+    For Neon PostgreSQL: enables pool_pre_ping to survive serverless connection drops.
+    """
+    if is_sqlite:
+        connect_args = {"check_same_thread": False}
+        if ":memory:" in url:
+            return create_engine(url, connect_args=connect_args, poolclass=StaticPool)
+        return create_engine(url, connect_args=connect_args)
+
+    # Neon PostgreSQL configuration
+    return create_engine(
+        url,
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30.0,
+        pool_recycle=1800,
+        pool_pre_ping=True,
+    )
+
+
+_engine = None
+_custom_engine = False
+_current_engine_target = None
+
+
+def get_engine():
+    """
+    Retrieve or initialize the active SQLAlchemy Engine singleton.
+    Dynamically responds to target URL or DB_PATH changes.
+    """
+    global _engine, _custom_engine, _current_engine_target
+
+    if _engine is not None and _custom_engine:
+        return _engine
+
+    target_url = get_database_url()
+    if target_url:
+        normalized = normalize_db_url(target_url)
+        target_key = ("postgres", normalized)
+    else:
+        DB_PATH.parent.mkdir(exist_ok=True)
+        normalized = f"sqlite:///{DB_PATH}"
+        target_key = ("sqlite", normalized)
+
+    if _engine is not None and _current_engine_target == target_key:
+        return _engine
+
+    if _engine is not None:
+        try:
+            _engine.dispose()
+        except Exception:
+            pass
+
+    if target_key[0] == "postgres":
+        _engine = create_app_engine(target_key[1], is_sqlite=False)
+        logger.info("Connected to PostgreSQL: %s", mask_db_url(target_url))
+    else:
+        _engine = create_app_engine(target_key[1], is_sqlite=True)
+        if not is_testing_environment():
+            logger.info("Using local SQLite database: %s", DB_PATH)
+
+    _current_engine_target = target_key
+    _custom_engine = False
+    return _engine
+
+
+def set_engine(engine) -> None:
+    """Manually assign an engine instance (primarily for tests)."""
+    global _engine, _custom_engine, _current_engine_target
+    _engine = engine
+    _custom_engine = True
+    _current_engine_target = ("custom", str(engine.url))
+
+
+def reset_engine() -> None:
+    """Dispose and reset the current engine singleton."""
+    global _engine, _custom_engine, _current_engine_target
+    if _engine is not None:
+        try:
+            _engine.dispose()
+        except Exception:
+            pass
+    _engine = None
+    _custom_engine = False
+    _current_engine_target = None
+
+
+# ── Serialization & Normalization Helpers ──────────────────────────────
 
 def _serialize(value: Any) -> str:
     """Serialize lists/dicts to JSON text for storage."""
@@ -109,8 +303,8 @@ def _normalize_risk_level(raw: str | None) -> str:
     return str(raw).capitalize()
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a Row to a plain dict with deserialized JSON fields."""
+def _row_to_dict(row: Any) -> dict:
+    """Convert a database row (RowMapping or dict) to a plain dict with deserialized JSON fields."""
     d = dict(row)
     for key in ("matched_categories", "urls", "emails", "phone_numbers", "payment_identifiers"):
         d[key] = _deserialize_list(d.get(key))
@@ -133,91 +327,74 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-# ── Schema ─────────────────────────────────────────────────────────────
+# ── Schema Definition ──────────────────────────────────────────────────
 
-_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS advertisements (
-    record_id              TEXT PRIMARY KEY,
-    ad_text                TEXT NOT NULL,
-    submitted_at           TEXT NOT NULL,
-    analysis_mode          TEXT NOT NULL DEFAULT 'rule_based',
-    risk_score             REAL DEFAULT 0.0,
-    risk_level             TEXT DEFAULT 'Low',
-    matched_categories     TEXT DEFAULT '[]',
-    evidence               TEXT DEFAULT '[]',
-    urls                   TEXT DEFAULT '[]',
-    emails                 TEXT DEFAULT '[]',
-    phone_numbers          TEXT DEFAULT '[]',
-    payment_identifiers    TEXT DEFAULT '[]',
-    review_required        INTEGER DEFAULT 0,
-    review_recommendation  TEXT DEFAULT 'No Immediate Review Indicated',
-    investigation_status   TEXT DEFAULT 'Open',
-    is_synthetic           INTEGER DEFAULT 0,
-    ml_prediction          TEXT DEFAULT NULL,
-    ml_confidence          REAL DEFAULT NULL,
-    ml_high_risk_score     REAL DEFAULT NULL,
-    ml_model_version       TEXT DEFAULT NULL,
-    hf_prediction          TEXT DEFAULT NULL,
-    hf_confidence          REAL DEFAULT NULL,
-    hf_model_version       TEXT DEFAULT NULL
-);
-"""
+metadata = MetaData()
 
-_CREATE_INDEX_RISK = """
-CREATE INDEX IF NOT EXISTS idx_risk_level ON advertisements (risk_level);
-"""
-
-_CREATE_INDEX_STATUS = """
-CREATE INDEX IF NOT EXISTS idx_investigation_status ON advertisements (investigation_status);
-"""
+advertisements_table = Table(
+    "advertisements",
+    metadata,
+    Column("record_id", String(64), primary_key=True),
+    Column("ad_text", Text, nullable=False),
+    Column("submitted_at", String(64), nullable=False, index=True),
+    Column("analysis_mode", String(64), nullable=False, server_default="rule_based"),
+    Column("risk_score", Float, server_default="0.0"),
+    Column("risk_level", String(32), server_default="Low", index=True),
+    Column("matched_categories", Text, server_default="[]"),
+    Column("evidence", Text, server_default="[]"),
+    Column("urls", Text, server_default="[]"),
+    Column("emails", Text, server_default="[]"),
+    Column("phone_numbers", Text, server_default="[]"),
+    Column("payment_identifiers", Text, server_default="[]"),
+    Column("review_required", Integer, server_default="0"),
+    Column("review_recommendation", Text, server_default="No Immediate Review Indicated"),
+    Column("investigation_status", String(32), server_default="Open", index=True),
+    Column("is_synthetic", Integer, server_default="0"),
+    Column("ml_prediction", String(64), nullable=True),
+    Column("ml_confidence", Float, nullable=True),
+    Column("ml_high_risk_score", Float, nullable=True),
+    Column("ml_model_version", String(64), nullable=True),
+    Column("hf_prediction", String(64), nullable=True),
+    Column("hf_confidence", Float, nullable=True),
+    Column("hf_model_version", String(64), nullable=True),
+)
 
 
-def init_db() -> None:
+def init_db(engine=None) -> None:
     """Create schema if not existing (idempotent) and migrate columns/labels."""
-    with _connect() as conn:
-        conn.execute(_CREATE_TABLE)
-        conn.execute(_CREATE_INDEX_RISK)
-        conn.execute(_CREATE_INDEX_STATUS)
+    eng = engine or get_engine()
+    metadata.create_all(eng)
 
-        # Check existing columns for safe schema evolution
-        cursor = conn.execute("PRAGMA table_info(advertisements)")
-        existing_cols = [r["name"] for r in cursor.fetchall()]
+    # Safe schema migration for missing columns
+    inspector = inspect(eng)
+    existing_cols = {c["name"] for c in inspector.get_columns("advertisements")}
 
-        if "review_recommendation" not in existing_cols:
-            conn.execute(
-                "ALTER TABLE advertisements ADD COLUMN review_recommendation TEXT DEFAULT 'No Immediate Review Indicated'"
-            )
-        if "emails" not in existing_cols:
-            conn.execute(
-                "ALTER TABLE advertisements ADD COLUMN emails TEXT DEFAULT '[]'"
-            )
-
-        # Phase 3 ML fields migration
-        for ml_col, col_type in [
+    with eng.begin() as conn:
+        for col_name, col_type in [
+            ("review_recommendation", "TEXT DEFAULT 'No Immediate Review Indicated'"),
+            ("emails", "TEXT DEFAULT '[]'"),
             ("ml_prediction", "TEXT DEFAULT NULL"),
-            ("ml_confidence", "REAL DEFAULT NULL"),
-            ("ml_high_risk_score", "REAL DEFAULT NULL"),
+            ("ml_confidence", "FLOAT DEFAULT NULL"),
+            ("ml_high_risk_score", "FLOAT DEFAULT NULL"),
             ("ml_model_version", "TEXT DEFAULT NULL"),
-        ]:
-            if ml_col not in existing_cols:
-                conn.execute(f"ALTER TABLE advertisements ADD COLUMN {ml_col} {col_type}")
-
-        # Phase 4 HF fields migration
-        for hf_col, col_type in [
             ("hf_prediction", "TEXT DEFAULT NULL"),
-            ("hf_confidence", "REAL DEFAULT NULL"),
+            ("hf_confidence", "FLOAT DEFAULT NULL"),
             ("hf_model_version", "TEXT DEFAULT NULL"),
         ]:
-            if hf_col not in existing_cols:
-                conn.execute(f"ALTER TABLE advertisements ADD COLUMN {hf_col} {col_type}")
+            if col_name not in existing_cols:
+                try:
+                    conn.execute(text(f"ALTER TABLE advertisements ADD COLUMN {col_name} {col_type}"))
+                except Exception as exc:
+                    logger.debug("Column %s could not be added (may already exist): %s", col_name, exc)
 
-        # Migrate legacy risk level labels to standardized title case
-        conn.execute("UPDATE advertisements SET risk_level = 'Low' WHERE risk_level IN ('MINIMAL', 'Minimal', 'LOW', 'low')")
-        conn.execute("UPDATE advertisements SET risk_level = 'Medium' WHERE risk_level IN ('MEDIUM', 'medium')")
-        conn.execute("UPDATE advertisements SET risk_level = 'High' WHERE risk_level IN ('HIGH', 'high')")
-        conn.execute("UPDATE advertisements SET risk_level = 'Critical' WHERE risk_level IN ('CRITICAL', 'critical')")
-
-        conn.commit()
+        # Normalize legacy risk level labels
+        try:
+            conn.execute(text("UPDATE advertisements SET risk_level = 'Low' WHERE risk_level IN ('MINIMAL', 'Minimal', 'LOW', 'low')"))
+            conn.execute(text("UPDATE advertisements SET risk_level = 'Medium' WHERE risk_level IN ('MEDIUM', 'medium')"))
+            conn.execute(text("UPDATE advertisements SET risk_level = 'High' WHERE risk_level IN ('HIGH', 'high')"))
+            conn.execute(text("UPDATE advertisements SET risk_level = 'Critical' WHERE risk_level IN ('CRITICAL', 'critical')"))
+        except Exception as exc:
+            logger.debug("Risk level normalization encountered exception: %s", exc)
 
 
 # ── Record ID ──────────────────────────────────────────────────────────
@@ -228,7 +405,7 @@ def generate_record_id() -> str:
     return f"TF-{short}"
 
 
-# ── CRUD ───────────────────────────────────────────────────────────────
+# ── CRUD Operations ────────────────────────────────────────────────────
 
 def insert_record(record: dict) -> str:
     """Insert a new advertisement record. Returns the record_id."""
@@ -236,75 +413,62 @@ def insert_record(record: dict) -> str:
     now = record.get("submitted_at") or datetime.now(timezone.utc).isoformat()
     std_level = _normalize_risk_level(record.get("risk_level", "Low"))
 
-    with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO advertisements (
-                record_id, ad_text, submitted_at, analysis_mode,
-                risk_score, risk_level, matched_categories, evidence,
-                urls, emails, phone_numbers, payment_identifiers,
-                review_required, review_recommendation,
-                investigation_status, is_synthetic,
-                ml_prediction, ml_confidence, ml_high_risk_score, ml_model_version,
-                hf_prediction, hf_confidence, hf_model_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record_id,
-                record.get("ad_text", ""),
-                now,
-                record.get("analysis_mode", "rule_based"),
-                float(record.get("risk_score", 0.0)),
-                std_level,
-                _serialize(record.get("matched_categories")),
-                _serialize(record.get("evidence")),
-                _serialize(record.get("urls")),
-                _serialize(record.get("emails")),
-                _serialize(record.get("phone_numbers")),
-                _serialize(record.get("payment_identifiers")),
-                1 if record.get("review_required") else 0,
-                record.get("review_recommendation", "No Immediate Review Indicated"),
-                record.get("investigation_status", "Open"),
-                1 if record.get("is_synthetic") else 0,
-                record.get("ml_prediction"),
-                float(record["ml_confidence"]) if record.get("ml_confidence") is not None else None,
-                float(record["ml_high_risk_score"]) if record.get("ml_high_risk_score") is not None else None,
-                record.get("ml_model_version"),
-                record.get("hf_prediction"),
-                float(record["hf_confidence"]) if record.get("hf_confidence") is not None else None,
-                record.get("hf_model_version"),
-            ),
-        )
-        conn.commit()
+    values = {
+        "record_id": record_id,
+        "ad_text": record.get("ad_text", ""),
+        "submitted_at": now,
+        "analysis_mode": record.get("analysis_mode", "rule_based"),
+        "risk_score": float(record["risk_score"]) if record.get("risk_score") is not None else None,
+        "risk_level": std_level,
+        "matched_categories": _serialize(record.get("matched_categories")),
+        "evidence": _serialize(record.get("evidence")),
+        "urls": _serialize(record.get("urls")),
+        "emails": _serialize(record.get("emails")),
+        "phone_numbers": _serialize(record.get("phone_numbers")),
+        "payment_identifiers": _serialize(record.get("payment_identifiers")),
+        "review_required": 1 if record.get("review_required") else 0,
+        "review_recommendation": record.get("review_recommendation", "No Immediate Review Indicated"),
+        "investigation_status": record.get("investigation_status", "Open"),
+        "is_synthetic": 1 if record.get("is_synthetic") else 0,
+        "ml_prediction": record.get("ml_prediction"),
+        "ml_confidence": float(record["ml_confidence"]) if record.get("ml_confidence") is not None else None,
+        "ml_high_risk_score": float(record["ml_high_risk_score"]) if record.get("ml_high_risk_score") is not None else None,
+        "ml_model_version": record.get("ml_model_version"),
+        "hf_prediction": record.get("hf_prediction"),
+        "hf_confidence": float(record["hf_confidence"]) if record.get("hf_confidence") is not None else None,
+        "hf_model_version": record.get("hf_model_version"),
+    }
+
+    eng = get_engine()
+    with eng.begin() as conn:
+        conn.execute(insert(advertisements_table).values(**values))
     return record_id
 
 
 def get_record(record_id: str) -> dict | None:
     """Retrieve a single record by ID."""
-    with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM advertisements WHERE record_id = ?",
-            (record_id,),
-        ).fetchone()
+    eng = get_engine()
+    stmt = select(advertisements_table).where(advertisements_table.c.record_id == record_id)
+    with eng.connect() as conn:
+        row = conn.execute(stmt).mappings().first()
     return _row_to_dict(row) if row else None
 
 
 def get_all_records() -> list[dict]:
     """Retrieve all records ordered by submission time (newest first)."""
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM advertisements ORDER BY submitted_at DESC"
-        ).fetchall()
+    eng = get_engine()
+    stmt = select(advertisements_table).order_by(advertisements_table.c.submitted_at.desc())
+    with eng.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
     return [_row_to_dict(r) for r in rows]
 
 
 def get_recent_records(limit: int = 10) -> list[dict]:
     """Retrieve the most recent records."""
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM advertisements ORDER BY submitted_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+    eng = get_engine()
+    stmt = select(advertisements_table).order_by(advertisements_table.c.submitted_at.desc()).limit(limit)
+    with eng.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
     return [_row_to_dict(r) for r in rows]
 
 
@@ -312,13 +476,15 @@ def update_status(record_id: str, new_status: str) -> bool:
     """Update investigation status. Returns True on success."""
     if new_status not in CASE_STATUSES:
         return False
-    with _connect() as conn:
-        cur = conn.execute(
-            "UPDATE advertisements SET investigation_status = ? WHERE record_id = ?",
-            (new_status, record_id),
-        )
-        conn.commit()
-    return cur.rowcount > 0
+    eng = get_engine()
+    stmt = (
+        update(advertisements_table)
+        .where(advertisements_table.c.record_id == record_id)
+        .values(investigation_status=new_status)
+    )
+    with eng.begin() as conn:
+        res = conn.execute(stmt)
+    return res.rowcount > 0
 
 
 def search_records(
@@ -327,68 +493,83 @@ def search_records(
     status: str | None = None,
 ) -> list[dict]:
     """Search and filter records."""
-    clauses: list[str] = []
-    params: list[str] = []
+    eng = get_engine()
+    conditions = []
 
-    if query.strip():
-        clauses.append("(record_id LIKE ? OR ad_text LIKE ?)")
-        like = f"%{query.strip()}%"
-        params.extend([like, like])
+    if query and query.strip():
+        pattern = f"%{query.strip()}%"
+        conditions.append(
+            or_(
+                advertisements_table.c.record_id.ilike(pattern),
+                advertisements_table.c.ad_text.ilike(pattern),
+            )
+        )
 
     if risk_level and risk_level != "All":
-        clauses.append("LOWER(risk_level) = LOWER(?)")
-        params.append(risk_level)
+        conditions.append(func.lower(advertisements_table.c.risk_level) == risk_level.strip().lower())
 
     if status and status != "All":
-        clauses.append("investigation_status = ?")
-        params.append(status)
+        conditions.append(advertisements_table.c.investigation_status == status.strip())
 
-    where = " AND ".join(clauses) if clauses else "1=1"
-    sql = f"SELECT * FROM advertisements WHERE {where} ORDER BY submitted_at DESC"
+    stmt = select(advertisements_table)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    stmt = stmt.order_by(advertisements_table.c.submitted_at.desc())
 
-    with _connect() as conn:
-        rows = conn.execute(sql, params).fetchall()
+    with eng.connect() as conn:
+        rows = conn.execute(stmt).mappings().all()
     return [_row_to_dict(r) for r in rows]
+
+
+def record_count() -> int:
+    """Quick count of all records."""
+    eng = get_engine()
+    stmt = select(func.count()).select_from(advertisements_table)
+    with eng.connect() as conn:
+        return conn.execute(stmt).scalar() or 0
 
 
 # ── Dashboard Metrics ──────────────────────────────────────────────────
 
 def get_dashboard_metrics() -> dict:
     """Aggregate metrics for dashboard, derived from stored records."""
-    with _connect() as conn:
-        total = conn.execute("SELECT COUNT(*) FROM advertisements").fetchone()[0]
+    eng = get_engine()
+    with eng.connect() as conn:
+        total = conn.execute(select(func.count()).select_from(advertisements_table)).scalar() or 0
 
         # Standardized risk counts dictionary
         risk_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
-        for row in conn.execute(
-            "SELECT risk_level, COUNT(*) as cnt FROM advertisements GROUP BY risk_level"
-        ).fetchall():
+        risk_stmt = (
+            select(advertisements_table.c.risk_level, func.count().label("cnt"))
+            .group_by(advertisements_table.c.risk_level)
+        )
+        for row in conn.execute(risk_stmt).mappings().all():
             std_lvl = _normalize_risk_level(row["risk_level"])
-            risk_counts[std_lvl] = risk_counts.get(std_lvl, 0) + row["cnt"]
+            risk_counts[std_lvl] = risk_counts.get(std_lvl, 0) + int(row["cnt"])
 
         status_counts = {}
-        for row in conn.execute(
-            "SELECT investigation_status, COUNT(*) as cnt FROM advertisements GROUP BY investigation_status"
-        ).fetchall():
-            status_counts[row["investigation_status"]] = row["cnt"]
+        status_stmt = (
+            select(advertisements_table.c.investigation_status, func.count().label("cnt"))
+            .group_by(advertisements_table.c.investigation_status)
+        )
+        for row in conn.execute(status_stmt).mappings().all():
+            status_counts[row["investigation_status"]] = int(row["cnt"])
 
-        # Activity over time (group by date)
+        # Activity over time (group by day YYYY-MM-DD)
+        day_expr = func.substr(advertisements_table.c.submitted_at, 1, 10).label("day")
+        activity_stmt = select(day_expr, func.count().label("cnt")).group_by(day_expr).order_by(day_expr)
         activity = []
-        for row in conn.execute(
-            """SELECT DATE(submitted_at) as day, COUNT(*) as cnt
-               FROM advertisements GROUP BY day ORDER BY day"""
-        ).fetchall():
-            activity.append({"date": row["day"], "count": row["cnt"]})
+        for row in conn.execute(activity_stmt).mappings().all():
+            activity.append({"date": row["day"], "count": int(row["cnt"])})
 
         # Top matched categories across all records
-        cat_rows = conn.execute(
-            "SELECT matched_categories FROM advertisements"
-        ).fetchall()
+        cat_stmt = select(advertisements_table.c.matched_categories)
+        cat_rows = conn.execute(cat_stmt).scalars().all()
 
-    # Aggregate categories
+    # Aggregate categories in Python
     cat_counts: dict[str, int] = {}
-    for row in cat_rows:
-        for cat in _deserialize_list(row["matched_categories"]):
+    for raw_cat in cat_rows:
+        for cat in _deserialize_list(raw_cat):
             cat_counts[cat] = cat_counts.get(cat, 0) + 1
 
     return {
@@ -400,7 +581,40 @@ def get_dashboard_metrics() -> dict:
     }
 
 
-def record_count() -> int:
-    """Quick count of all records."""
-    with _connect() as conn:
-        return conn.execute("SELECT COUNT(*) FROM advertisements").fetchone()[0]
+# ── Diagnostics & Connection Health ────────────────────────────────────
+
+def check_database_connection(engine: Engine | None = None) -> dict[str, Any]:
+    """
+    Check the current database connection health, returning status and metadata.
+    Never exposes passwords or secret credentials in return dictionaries.
+    """
+    if engine is not None and hasattr(engine, "url"):
+        raw_url = str(engine.url)
+    else:
+        raw_url = get_database_url()
+
+    is_postgres = bool(raw_url and ("postgres" in raw_url.lower()))
+
+    result = {
+        "connected": False,
+        "is_postgres": is_postgres,
+        "database_type": "PostgreSQL (Neon)" if is_postgres else "SQLite (Local/Fallback)",
+        "sanitized_url": mask_db_url(raw_url) if raw_url else f"sqlite:///{DB_PATH}",
+        "error": None,
+        "version": None,
+        "record_count": 0,
+    }
+
+    try:
+        eng = engine or get_engine()
+        with eng.connect() as conn:
+            ver = conn.execute(text("SELECT version();" if is_postgres else "SELECT sqlite_version();")).scalar()
+            cnt = conn.execute(select(func.count()).select_from(advertisements_table)).scalar() or 0
+            result["connected"] = True
+            result["version"] = str(ver).splitlines()[0] if ver else "Unknown"
+            result["record_count"] = int(cnt)
+    except Exception as exc:
+        result["error"] = str(exc).splitlines()[0]
+        logger.error("Database connection check failed: %s", result["error"])
+
+    return result

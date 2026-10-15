@@ -39,6 +39,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from src.auth import require_authenticated_user
+if not require_authenticated_user():
+    st.stop()
+
 init_db()
 seed_demo_data()
 inject_global_css()
@@ -188,6 +192,15 @@ with tab_url:
                 st.error(f"❌ URL Validation Error: {url_res['error']}")
             else:
                 st.info(f"ℹ️ **Disclosure:** {url_res['disclosure']}")
+                url_model = url_res.get("url_model") or {}
+                if url_model.get("available"):
+                    st.caption(
+                        f"Supplementary URL model: **{url_model.get('prediction')}** · "
+                        f"{url_model.get('phishing_probability', 0):.1%} phishing likelihood. "
+                        "This generic phishing signal does not change the financial-ad risk score."
+                    )
+                elif url_model.get("error"):
+                    st.caption(f"Supplementary URL model unavailable: {url_model['error']}")
                 if url_res.get("indicators"):
                     for ind in url_res["indicators"]:
                         st.warning(f"⚠️ {ind}")
@@ -199,14 +212,19 @@ with tab_url:
                         details=f"URL: {url_res['hostname']} ({url_res.get('status_code', 'N/A')})",
                         warnings=url_res.get("warnings", []),
                         indicators=url_res.get("indicators", []),
-                        extra_meta={"final_url": url_res.get("final_url", input_url.strip())},
+                        extra_meta={"final_url": url_res.get("final_url", input_url.strip()),
+                                    "url_model_results": [url_model] if url_model else []},
                     )
                     st.success(f"✓ Extracted {len(url_res['extracted_text'].split()):,} words from page '{url_res.get('title', 'Untitled')}'. Loaded into Review Area.")
                     st.rerun()
                 else:
                     # Syntax-only mode or live fetch without text / fetch failure
                     warn_list = list(url_res.get("warnings", []))
-                    if url_res.get("error"):
+                    failure_category = url_res.get("failure_category")
+                    network_failure = failure_category in {
+                        "dns_resolution_failed", "connection_failed", "connection_timeout", "tls_error"
+                    }
+                    if url_res.get("error") and not network_failure:
                         warn_list.append(url_res.get("error"))
                     syntax_text = f"URL domain analysis: {url_res['hostname']}"
                     if url_res.get("indicators"):
@@ -217,7 +235,17 @@ with tab_url:
                         detail_msg = f"Hostname: {url_res['hostname']} (Syntax Only)"
                     else:
                         src_type = "Website URL (Fetch Failed)"
-                        detail_msg = f"Fetch failed: {url_res.get('error', 'No text extracted')}"
+                        if network_failure:
+                            detail_msg = f"Network fetch failed ({failure_category}): {url_res.get('error', 'No page content retrieved')}"
+                        else:
+                            detail_msg = f"Fetch failed: {url_res.get('error', 'No text extracted')}"
+
+                    fetch_notice = None
+                    if network_failure:
+                        fetch_notice = (
+                            "The page could not be fetched because DNS/network access failed. "
+                            "This is not evidence that the URL is suspicious; page risk is unscored until content is available."
+                        )
 
                     update_review_state(
                         text=syntax_text,
@@ -225,8 +253,14 @@ with tab_url:
                         details=detail_msg,
                         warnings=warn_list,
                         indicators=url_res.get("indicators", []),
-                        extra_meta={"final_url": url_res.get("final_url", input_url.strip())},
+                        extra_meta={"final_url": url_res.get("final_url", input_url.strip()),
+                                    "url_model_results": [url_model] if url_model else [],
+                                    "fetch_failure_category": failure_category,
+                                    "fetch_error": url_res.get("error"),
+                                    "fetch_notice": fetch_notice},
                     )
+                    if fetch_notice:
+                        st.info(fetch_notice)
                     st.info(f"Loaded {src_type} into Review Area for triage.")
                     st.rerun()
 
@@ -243,8 +277,8 @@ with tab_img:
                 st.image(val_img["image"], caption=f"{img_file.name} ({val_img['dimensions'][0]}×{val_img['dimensions'][1]} px)", use_container_width=True)
             with c_ocr:
                 st.write(f"File size: **{val_img['file_size_kb']:.1f} KB**")
-                if st.button("⚡ Run Local OCR (Tesseract)", key="btn_ocr_unified"):
-                    with st.spinner("Extracting text locally via Tesseract OCR…"):
+                if st.button("⚡ Run Local OCR (EasyOCR / Tesseract)", key="btn_ocr_unified"):
+                    with st.spinner("Extracting text locally via EasyOCR / Tesseract fallback…"):
                         ocr_out = extract_text_ocr(val_img["image"])
                     if ocr_out["available"] and ocr_out["text"].strip():
                         warn_list = [ocr_out["error"]] if ocr_out.get("error") else []
@@ -327,6 +361,8 @@ st.markdown(
 if source_info.get("warnings"):
     for warn in source_info["warnings"]:
         st.warning(f"⚠️ **Extraction Warning:** {warn}")
+if source_info.get("fetch_notice"):
+    st.info(source_info["fetch_notice"])
 
 ad_text = st.text_area(
     "Verified Content for Threat Analysis",
@@ -408,7 +444,8 @@ if analyze_clicked:
             "payment_identifiers": unified_res.get("payment_identifiers", []),
         }
         st.session_state.ml_result = {
-            "available": unified_res.get("ml_prediction") is not None,
+            "available": unified_res.get("engine_status", {}).get("tfidf") == "available",
+            "error": unified_res.get("engine_errors", {}).get("tfidf"),
             "risk_label": unified_res.get("ml_prediction"),
             "confidence": unified_res.get("ml_confidence"),
             "high_risk_score": unified_res.get("ml_decision_score"),
@@ -416,9 +453,12 @@ if analyze_clicked:
             "top_signals": unified_res.get("ml_top_signals", []),
         }
         st.session_state.hf_result = {
-            "available": unified_res.get("hf_prediction") is not None,
+            "available": unified_res.get("engine_status", {}).get("distilbert") == "available",
+            "error": unified_res.get("engine_errors", {}).get("distilbert"),
             "risk_label": unified_res.get("hf_prediction"),
             "confidence": unified_res.get("hf_confidence"),
+            "class_probabilities": unified_res.get("hf_class_probabilities"),
+            "high_risk_score": unified_res.get("hf_decision_score"),
             "model_version": unified_res.get("hf_model_version"),
         }
         st.session_state.verdict_data = {
@@ -528,6 +568,9 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
 
         with ev_col:
             st.markdown("**Rule Engine Evidence Matches**")
+            for item in rule_res.get("evidence", []):
+                if "[Model Availability]" in str(item):
+                    st.warning(str(item))
             matched_rules = rule_res.get("matched_rules", [])
             if matched_rules:
                 for r in matched_rules:
@@ -614,6 +657,12 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
                     st.write("**Matched Categories:**", ", ".join(rule_res["matched_categories"]))
                 else:
                     st.write("No rule categories matched.")
+                for matched in rule_res.get("matched_rules", []):
+                    st.write(
+                        f"• {matched.get('rule_name', 'Rule')} "
+                        f"(+{matched.get('weight', 0)}): {matched.get('evidence', '')}"
+                    )
+                st.write("**Final synthesis branch:**", verdict.get("consensus_status", "Evaluated"))
 
             with tab_tech_ml:
                 if ml_res.get("available"):
@@ -647,26 +696,34 @@ if st.session_state.analysis_result and st.session_state.saved_record_id:
                         with st.expander("📊 View Model Training Metrics & Evaluation"):
                             st.json(metrics)
                 else:
-                    st.warning("ML model not available.")
+                    st.warning(f"ML model not available: {ml_res.get('error') or 'no model output was returned'}")
 
             with tab_tech_hf:
                 if hf_res.get("available"):
+                    hf_info = get_hf_model_info() or {}
                     h1, h2 = st.columns(2)
                     with h1:
                         st.write(f"Model: `{hf_res.get('model_version', 'distilbert')}`")
                         st.write(f"Predicted Class: **{hf_res.get('risk_label')}**")
                         hf_conf_pct = hf_res.get('confidence', 0) * 100
-                        st.write(f"Softmax Confidence: **{hf_conf_pct:.1f}%**")
+                        st.write(f"Predicted-class confidence: **{hf_conf_pct:.1f}%**")
+                        probabilities = hf_res.get("class_probabilities") or {}
+                        if probabilities:
+                            st.write(
+                                "Class probabilities: "
+                                f"Safe **{probabilities.get('Safe', 0) * 100:.1f}%** · "
+                                f"High Risk **{probabilities.get('High Risk', 0) * 100:.1f}%**"
+                            )
                     with h2:
-                        st.write("Base: distilbert-base-uncased")
-                        st.write("Fine-tuned on: IEEE SKIT002 Financial Ad Dataset")
+                        st.write(f"Base: {hf_info.get('base_model', 'unknown')}")
+                        st.write(f"Fine-tuning task: {hf_info.get('task_definition', 'unverified for this legacy artifact')}")
                     st.caption(f"Interpretability Note: {hf_res.get('disclaimer', '')}")
-                    hf_info = get_hf_model_info()
                     if hf_info:
                         with st.expander("📊 View DistilBERT Fine-Tuning Metadata & Evaluation"):
                             st.json(hf_info)
                 else:
-                    st.warning("DistilBERT model not available.")
+                    hf_error = hf_res.get("error") or "no model output was returned"
+                    st.warning(f"DistilBERT model unavailable or skipped: {hf_error}")
 
         # ── 4. Investigator Navigation ────────────────────────────────────
         st.markdown('<div class="section-header">Next Steps</div>', unsafe_allow_html=True)

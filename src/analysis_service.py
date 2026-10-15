@@ -61,6 +61,41 @@ def _normalize_urls_list(raw_urls: Any) -> list[str]:
     return []
 
 
+def _classify_urls(raw_urls: Any) -> list[Dict[str, Any]]:
+    """Classify extracted URLs as an explicitly supplementary phishing signal."""
+    try:
+        from src.url_model import classify_url
+        return [classify_url(url) for url in _normalize_urls_list(raw_urls)[:20]]
+    except Exception as exc:
+        logger.warning("URL model unavailable: %s", exc)
+        return [{"available": False, "prediction": None, "phishing_probability": None,
+                 "error": str(exc), "model": "pirocheto/phishing-url-detection (ONNX)"}]
+
+
+def _url_model_evidence(results: list[Dict[str, Any]]) -> list[str]:
+    lines = []
+    for result in results:
+        if result.get("available"):
+            likelihood = result.get("phishing_probability")
+            pct = f"{likelihood:.1%}" if isinstance(likelihood, (int, float)) else "unknown likelihood"
+            lines.append(f"[Supplementary URL model] {result.get('prediction')} ({pct} phishing likelihood); does not affect financial-ad risk score.")
+        elif result.get("error"):
+            lines.append(f"[Supplementary URL model unavailable] {result['error']}")
+    return lines
+
+
+def _url_results_from_metadata(source_meta: Dict[str, Any], fallback_text: str = "") -> list[Dict[str, Any]]:
+    results = source_meta.get("url_model_results") or source_meta.get("url_model")
+    if isinstance(results, dict):
+        return [results]
+    if results:
+        return list(results)
+    url = source_meta.get("final_url") or source_meta.get("url")
+    if not url and fallback_text.startswith(("http://", "https://")) and " " not in fallback_text:
+        url = fallback_text
+    return _classify_urls(url) if url else []
+
+
 def run_unified_analysis(
     text: Optional[str],
     source_type: str = "Direct Text",
@@ -89,6 +124,7 @@ def run_unified_analysis(
 
     # ── 1. Check for bare URL directly input in Direct Text ────────────────
     if source_type == "Direct Text" and (clean_text.startswith("http://") or clean_text.startswith("https://")) and " " not in clean_text:
+        url_results = _classify_urls(clean_text)
         return {
             "source_type": source_type,
             "extraction_status": STATUS_SYNTAX_ONLY,
@@ -103,7 +139,8 @@ def run_unified_analysis(
             "rule_level": "Unscored",
             "matched_rules": [],
             "matched_categories": [],
-            "evidence": ["Direct text input is a bare URL; live webpage content was not retrieved."],
+            "evidence": ["Direct text input is a bare URL; live webpage content was not retrieved."] + _url_model_evidence(url_results),
+            "url_model_results": url_results,
             "urls": [clean_text],
             "emails": [],
             "phone_numbers": [],
@@ -126,6 +163,7 @@ def run_unified_analysis(
     # ── 2. Check for failed, empty, syntax-only, or insufficient content ────
     if extraction_status == STATUS_SYNTAX_ONLY:
         meta_url = source_meta.get("final_url") or source_meta.get("url") or (clean_text if clean_text.startswith("http") else None)
+        url_results = _url_results_from_metadata(source_meta, clean_text)
         return {
             "source_type": source_type,
             "extraction_status": STATUS_SYNTAX_ONLY,
@@ -140,7 +178,8 @@ def run_unified_analysis(
             "rule_level": "Unscored",
             "matched_rules": [],
             "matched_categories": [],
-            "evidence": ["Domain syntax only; live page content was not fetched or accessible."],
+            "evidence": ["Domain syntax only; live page content was not fetched or accessible."] + _url_model_evidence(url_results),
+            "url_model_results": url_results,
             "urls": _normalize_urls_list(meta_url),
             "emails": [],
             "phone_numbers": [],
@@ -162,8 +201,34 @@ def run_unified_analysis(
 
     if extraction_status == STATUS_EXTRACTION_FAILED or extraction_error:
         is_url_source = "url" in str(source_type).lower() or "website" in str(source_type).lower()
+        fetch_failure_category = source_meta.get("fetch_failure_category")
+        is_network_failure = fetch_failure_category in {
+            "dns_resolution_failed", "connection_failed", "connection_timeout", "tls_error"
+        }
+        is_ssrf_block = fetch_failure_category == "ssrf_blocked"
         err_msg = extraction_error or ("Webpage content could not be retrieved." if is_url_source else "Content extraction failed.")
         meta_url = source_meta.get("final_url") or source_meta.get("url") or (clean_text if clean_text.startswith("http") else None)
+        url_results = _url_results_from_metadata(source_meta, clean_text)
+        if is_url_source and is_network_failure:
+            explanation = (
+                f"The page could not be fetched because of a DNS or network problem: {err_msg}. "
+                "This failure does not indicate that the URL is suspicious. Page content was unavailable, so its risk remains unscored."
+            )
+            recommendation = "Check the app's internet/DNS connectivity and the URL spelling, then retry. If it remains unreachable, inspect the page manually in a sandboxed browser."
+        elif is_url_source and is_ssrf_block:
+            explanation = f"The URL was blocked by the SSRF safety check: {err_msg}. No page content was fetched and no risk score was produced."
+            recommendation = "Do not bypass the SSRF protection. Review the target and its resolved address through an approved, isolated investigation environment."
+        else:
+            explanation = (
+                f"Webpage content could not be retrieved: {err_msg}. Automated scoring cannot be performed without accessible webpage content."
+                if is_url_source else
+                f"Document/media extraction failed: {err_msg}. Automated scoring cannot be performed on unextracted files."
+            )
+            recommendation = (
+                "Manual Inspection Required: Verify network connectivity, confirm the URL is reachable, or manually inspect the target site in a sandboxed browser."
+                if is_url_source else
+                "Manual Inspection Required: Verify file integrity, check format compatibility, or transcribe text manually."
+            )
         return {
             "source_type": source_type,
             "extraction_status": STATUS_EXTRACTION_FAILED,
@@ -178,7 +243,8 @@ def run_unified_analysis(
             "rule_level": "Unscored",
             "matched_rules": [],
             "matched_categories": [],
-            "evidence": [f"Extraction error: {err_msg}"],
+            "evidence": [f"Extraction error: {err_msg}"] + _url_model_evidence(url_results),
+            "url_model_results": url_results,
             "urls": _normalize_urls_list(meta_url),
             "emails": [],
             "phone_numbers": [],
@@ -191,22 +257,15 @@ def run_unified_analysis(
             "hf_prediction": None,
             "hf_confidence": None,
             "hf_model_version": None,
-            "explanation": (
-                f"Webpage content could not be retrieved: {err_msg}. Automated scoring cannot be performed without accessible webpage content."
-                if is_url_source else
-                f"Document/media extraction failed: {err_msg}. Automated scoring cannot be performed on unextracted files."
-            ),
-            "recommendation": (
-                "Manual Inspection Required: Verify network connectivity, confirm the URL is reachable, or manually inspect the target site in a sandboxed browser."
-                if is_url_source else
-                "Manual Inspection Required: Verify file integrity, check format compatibility, or transcribe text manually."
-            ),
+            "explanation": explanation,
+            "recommendation": recommendation,
             "investigation_status": "Reviewing",
             "review_required": True,
             "source_metadata": source_meta,
         }
 
     if not clean_text:
+        url_results = _url_results_from_metadata(source_meta)
         return {
             "source_type": source_type,
             "extraction_status": STATUS_EMPTY_INPUT,
@@ -221,7 +280,8 @@ def run_unified_analysis(
             "rule_level": "Unscored",
             "matched_rules": [],
             "matched_categories": [],
-            "evidence": ["No advertisement text provided."],
+            "evidence": ["No advertisement text provided."] + _url_model_evidence(url_results),
+            "url_model_results": url_results,
             "urls": [],
             "emails": [],
             "phone_numbers": [],
@@ -242,6 +302,7 @@ def run_unified_analysis(
         }
 
     if len(clean_text) < 5:
+        url_results = _url_results_from_metadata(source_meta, clean_text)
         return {
             "source_type": source_type,
             "extraction_status": STATUS_INSUFFICIENT_CONTENT,
@@ -256,7 +317,8 @@ def run_unified_analysis(
             "rule_level": "Unscored",
             "matched_rules": [],
             "matched_categories": [],
-            "evidence": ["Provided text is too short for reliable threat pattern analysis."],
+            "evidence": ["Provided text is too short for reliable threat pattern analysis."] + _url_model_evidence(url_results),
+            "url_model_results": url_results,
             "urls": [],
             "emails": [],
             "phone_numbers": [],
@@ -283,7 +345,7 @@ def run_unified_analysis(
         ml_result = predict_ad_ml(clean_text)
     except Exception as exc:
         logger.error("TF-IDF ML inference failed: %s", exc)
-        ml_result = {"available": False, "risk_label": None, "confidence": None, "model_version": None}
+        ml_result = {"available": False, "risk_label": None, "confidence": None, "model_version": None, "error": str(exc)}
 
     if skip_hf:
         hf_result = {"available": False, "risk_label": None, "confidence": None, "model_version": None}
@@ -292,13 +354,31 @@ def run_unified_analysis(
             hf_result = predict_ad_hf(clean_text)
         except Exception as exc:
             logger.error("DistilBERT inference failed: %s", exc)
-            hf_result = {"available": False, "risk_label": None, "confidence": None, "model_version": None}
+            hf_result = {"available": False, "risk_label": None, "confidence": None, "model_version": None, "error": str(exc)}
 
     # Synthesize unified verdict using the exact deterministic combination strategy
     verdict_data = compute_unified_verdict(rule_result, ml_result, hf_result)
 
-    final_score = int(verdict_data["final_score"])
+    final_score = verdict_data["final_score"]
     final_verdict = verdict_data["final_verdict"]
+
+    engine_status = {
+        "rules": "available",
+        "tfidf": "available" if ml_result.get("available") else "unavailable",
+        "distilbert": "skipped" if skip_hf else ("available" if hf_result.get("available") else "unavailable"),
+    }
+    engine_errors = {
+        "tfidf": ml_result.get("error") if not ml_result.get("available") else None,
+        "distilbert": (
+            "Inference skipped for batch performance." if skip_hf else
+            (hf_result.get("error") if not hf_result.get("available") else None)
+        ),
+    }
+    model_issues = [
+        f"{name}: {error}" for name, error in engine_errors.items() if error
+    ]
+    evidence = list(rule_result.get("evidence", []))
+    evidence.extend(f"[Model Availability] {issue}" for issue in model_issues)
 
     # Merge any URLs from rule_result with source_metadata URLs
     merged_urls = list(rule_result.get("urls", []))
@@ -306,13 +386,19 @@ def run_unified_analysis(
     if meta_url:
         merged_urls.extend(_normalize_urls_list(meta_url))
     clean_urls = _normalize_urls_list(merged_urls)
+    url_results = _url_results_from_metadata(source_meta) or _classify_urls(clean_urls)
+    evidence.extend(_url_model_evidence(url_results))
+    source_meta["url_model_results"] = url_results
+    if clean_urls or url_results:
+        engine_status["url_model"] = "available" if any(item.get("available") for item in url_results) else "unavailable"
+        engine_errors["url_model"] = next((item.get("error") for item in url_results if item.get("error")), None)
 
     return {
         "source_type": source_type,
         "extraction_status": STATUS_SUCCESS,
         "extraction_error": None,
         "analyzed_text": clean_text,
-        "has_sufficient_evidence": True,
+        "has_sufficient_evidence": final_score is not None,
         "final_verdict": final_verdict,
         "final_score": final_score,
         "risk_score": final_score,
@@ -321,7 +407,7 @@ def run_unified_analysis(
         "rule_level": rule_result["risk_level"],
         "matched_rules": rule_result.get("matched_rules", []),
         "matched_categories": rule_result.get("matched_categories", []),
-        "evidence": rule_result.get("evidence", []),
+        "evidence": evidence,
         "urls": clean_urls,
         "emails": rule_result.get("emails", []),
         "phone_numbers": rule_result.get("phone_numbers", []),
@@ -333,7 +419,12 @@ def run_unified_analysis(
         "ml_top_signals": ml_result.get("top_signals", []),
         "hf_prediction": hf_result.get("risk_label"),
         "hf_confidence": hf_result.get("confidence"),
+        "hf_class_probabilities": hf_result.get("class_probabilities"),
+        "hf_decision_score": hf_result.get("high_risk_score"),
         "hf_model_version": hf_result.get("model_version"),
+        "url_model_results": url_results,
+        "engine_status": engine_status,
+        "engine_errors": engine_errors,
         "explanation": verdict_data["explanation"],
         "recommendation": verdict_data["recommendation"],
         "investigation_status": verdict_data["investigation_status"],
@@ -363,7 +454,7 @@ def persist_analysis_record(
     analysis_mode = f"{src_tag}_unified"
 
     score_val = analysis_result.get("final_score")
-    stored_score = int(score_val) if score_val is not None else 0
+    stored_score = int(score_val) if score_val is not None else None
 
     record = {
         "record_id": record_id,

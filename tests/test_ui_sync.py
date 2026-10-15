@@ -11,6 +11,8 @@ import os
 import sys
 import pytest
 from streamlit.testing.v1 import AppTest
+from src.auth import create_user
+import src.auth as auth_module
 
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -246,9 +248,23 @@ from pathlib import Path
 APP_ENTRYPOINT = Path(__file__).resolve().parent.parent / "app.py"
 
 
-def test_real_page_analyze_advertisement_suspicious_flow():
-    """Verify that Analyze Advertisement page runs suspicious analysis without NameError or crash."""
+@pytest.fixture
+def authenticated_app(tmp_path, monkeypatch):
+    """Open the existing app with a temporary real local account session."""
+    monkeypatch.setattr(auth_module, "DB_PATH", tmp_path / "accounts.sqlite3")
+    identity = create_user(
+        "Test Investigator", "test-investigator@example.org",
+        "a sufficiently long password", "a sufficiently long password",
+    )
     at = AppTest.from_file(APP_ENTRYPOINT, default_timeout=45).run()
+    at.session_state["auth_user"] = identity
+    at.run()
+    return at
+
+
+def test_real_page_analyze_advertisement_suspicious_flow(authenticated_app):
+    """Verify that Analyze Advertisement page runs suspicious analysis without NameError or crash."""
+    at = authenticated_app
     at.switch_page("pages/1_Analyze_Advertisement.py").run()
     assert len(at.exception) == 0
 
@@ -266,9 +282,9 @@ def test_real_page_analyze_advertisement_suspicious_flow():
     assert at.session_state.get("saved_record_id") is not None
 
 
-def test_real_page_analyze_advertisement_legitimate_flow():
+def test_real_page_analyze_advertisement_legitimate_flow(authenticated_app):
     """Verify that Analyze Advertisement page runs legitimate analysis without NameError or crash."""
-    at = AppTest.from_file(APP_ENTRYPOINT, default_timeout=45).run()
+    at = authenticated_app
     at.switch_page("pages/1_Analyze_Advertisement.py").run()
     assert len(at.exception) == 0
 
@@ -282,9 +298,9 @@ def test_real_page_analyze_advertisement_legitimate_flow():
     assert verdict["final_verdict"] == "LOW RISK"
 
 
-def test_real_page_syntax_only_url_flow():
+def test_real_page_syntax_only_url_flow(authenticated_app):
     """Verify that syntax-only URL analysis produces INSUFFICIENT EVIDENCE without crashing."""
-    at = AppTest.from_file(APP_ENTRYPOINT, default_timeout=45).run()
+    at = authenticated_app
     at.switch_page("pages/1_Analyze_Advertisement.py").run()
     assert len(at.exception) == 0
 

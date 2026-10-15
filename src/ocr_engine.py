@@ -6,6 +6,8 @@ Images are never persisted to disk or sent to external services.
 
 import io
 import logging
+import os
+from functools import lru_cache
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("tracefin.ocr")
@@ -26,6 +28,35 @@ def is_tesseract_available() -> bool:
         return True
     except Exception:
         return False
+
+
+def is_easyocr_available() -> bool:
+    """Check whether EasyOCR is importable (weights may still need first-run download)."""
+    try:
+        import easyocr  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+@lru_cache(maxsize=1)
+def _get_easyocr_reader():
+    import easyocr
+    languages = [part.strip() for part in os.getenv("TRACEFIN_EASYOCR_LANGUAGES", "en").split(",") if part.strip()]
+    return easyocr.Reader(languages, gpu=False)
+
+
+def _extract_easyocr(image) -> Dict[str, Any]:
+    """Run local EasyOCR; EasyOCR may download official weights on its first run."""
+    import numpy as np
+    reader = _get_easyocr_reader()
+    detections = reader.readtext(np.asarray(image.convert("RGB")), detail=1)
+    texts = [str(item[1]).strip() for item in detections if len(item) > 2 and str(item[1]).strip()]
+    confidences = [float(item[2]) for item in detections if len(item) > 2]
+    confidence = (sum(confidences) / len(confidences) * 100.0) if confidences else None
+    return {"text": " ".join(texts), "confidence": round(confidence, 1) if confidence is not None else None,
+            "error": None if texts else "OCR completed but no text was detected in the image.",
+            "available": True, "engine": "EasyOCR"}
 
 
 def validate_image(uploaded_file) -> Dict[str, Any]:
@@ -137,11 +168,30 @@ def extract_text_ocr(image) -> Dict[str, Any]:
         "confidence": None,
         "error": None,
         "available": False,
+        "engine": None,
     }
 
     if image is None:
         result["error"] = "No image provided for OCR."
         return result
+
+    preferred_engine = os.getenv("TRACEFIN_OCR_ENGINE", "auto").strip().lower()
+    if preferred_engine not in {"auto", "easyocr", "tesseract"}:
+        preferred_engine = "auto"
+
+    # EasyOCR runs locally and is preferred when available. If its package/model
+    # weights are unavailable, retain the established Tesseract fallback.
+    if preferred_engine in {"auto", "easyocr"}:
+        try:
+            easy_result = _extract_easyocr(image)
+            if easy_result.get("available") and easy_result.get("text", "").strip():
+                return easy_result
+            raise RuntimeError(easy_result.get("error") or "EasyOCR detected no text.")
+        except Exception as exc:
+            logger.warning("EasyOCR unavailable; attempting Tesseract fallback: %s", exc)
+            if preferred_engine == "easyocr" and not is_tesseract_available():
+                result["error"] = f"EasyOCR failed ({exc}); Tesseract fallback is not available."
+                return result
 
     # Check pytesseract availability
     try:
@@ -185,6 +235,7 @@ def extract_text_ocr(image) -> Dict[str, Any]:
         result["text"] = extracted
         result["confidence"] = round(avg_confidence, 1) if avg_confidence is not None else None
         result["available"] = True
+        result["engine"] = "Tesseract"
 
         if not extracted.strip():
             result["error"] = "OCR completed but no text was detected in the image."

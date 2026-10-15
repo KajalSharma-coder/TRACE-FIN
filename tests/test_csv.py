@@ -96,6 +96,9 @@ def test_run_batch_analysis_functional():
     # First row should be flagged High Risk by rule engine
     assert results.iloc[0]["risk_level"] in ("High", "Critical")
     assert results.iloc[0]["validation_status"] == "OK"
+    assert results.iloc[0]["tfidf_status"] in ("available", "unavailable")
+    assert results.iloc[0]["distilbert_status"] == "skipped"
+    assert results.iloc[0]["distilbert_error"] == "Inference skipped for batch performance."
     assert "9876543210" in results.iloc[0]["phone_numbers"] or "@seller" in results.iloc[0]["original_text"]
     assert results.iloc[0]["ground_truth"] == "High Risk"
 
@@ -105,6 +108,7 @@ def test_run_batch_analysis_functional():
 
     # Third row should be marked invalid due to length
     assert "INVALID" in results.iloc[2]["validation_status"]
+    assert results.iloc[2]["tfidf_status"] == "not_run"
 
 
 def test_export_safe_csv_neutralizes_formulas():

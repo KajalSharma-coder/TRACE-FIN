@@ -3,12 +3,10 @@ TRACE//FIN — Reusable UI Components
 Shared Streamlit components and CSS for consistent design.
 """
 
+from html import escape
 import streamlit as st
 
-from config import (
-    APP_NAME, APP_TAGLINE, APP_CATEGORY,
-    COLORS, RISK_LEVELS, STATUS_COLORS, CASE_STATUSES,
-)
+from config import COLORS, RISK_LEVELS, STATUS_COLORS, CASE_STATUSES
 
 
 # ── Global CSS ─────────────────────────────────────────────────────────
@@ -20,31 +18,99 @@ def inject_global_css() -> None:
 
 _GLOBAL_CSS = f"""
 <style>
+/* TRACE//FIN navy and cyan application shell */
+.stApp {{
+    background: radial-gradient(ellipse at 15% 0%, rgba(6,182,212,.08), transparent 35%), {COLORS["bg_primary"]};
+    color: {COLORS["text_primary"]};
+}}
+.block-container {{ max-width: 1440px; padding-top: 2rem; padding-bottom: 3rem; }}
+.auth-brand {{ color: {COLORS["accent"]}; font-size: 1.5rem; font-weight: 750; letter-spacing: .12em; }}
+[data-testid="stHeader"] {{ background: rgba(15,23,36,.88); }}
+[data-testid="stMarkdownContainer"] p, [data-testid="stCaptionContainer"] {{ line-height: 1.55; }}
+input, textarea {{ border-radius: 8px !important; }}
+div.stButton > button, div.stFormSubmitButton > button {{
+    border-radius: 8px; min-height: 2.65rem; font-weight: 600;
+    border: 1px solid rgba(6,182,212,.45); transition: background .15s ease, border-color .15s ease;
+}}
+div.stButton > button:hover, div.stFormSubmitButton > button:hover {{ border-color: {COLORS["accent"]}; }}
+div[data-testid="stExpander"] {{ border-color: {COLORS["border"]}; border-radius: 10px; }}
+
 /* ── Base overrides ─────────────────────────────────────────────── */
 .stApp {{
     background-color: {COLORS["bg_primary"]};
 }}
 
-/* Sidebar styling */
+/* Sidebar shell */
 section[data-testid="stSidebar"] {{
-    background-color: {COLORS["bg_secondary"]} !important;
-    border-right: 1px solid {COLORS["border"]};
+    width: clamp(280px, 24vw, 300px) !important;
+    min-width: clamp(280px, 24vw, 300px) !important;
+    background: linear-gradient(180deg, #091725 0%, {COLORS["bg_secondary"]} 42%, #08131f 100%) !important;
+    border-right: 1px solid rgba(19, 214, 192, .16);
+    box-shadow: 12px 0 36px rgba(0, 0, 0, .12);
 }}
-
-section[data-testid="stSidebar"] .stMarkdown h1 {{
-    color: {COLORS["accent"]} !important;
-    font-size: 1.5rem !important;
-    letter-spacing: 2px;
-    margin-bottom: 0 !important;
+section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {{ overflow-x:hidden; }}
+section[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {{ gap:.55rem; }}
+section[data-testid="stSidebar"] .sidebar-brand {{
+    padding:.55rem .2rem .85rem; border-bottom:1px solid rgba(124,160,179,.14); margin-bottom:.2rem;
+}}
+section[data-testid="stSidebar"] .sidebar-brand-name {{ color:#edf7fb; font-size:1.08rem; font-weight:780; letter-spacing:.17em; white-space:nowrap; }}
+section[data-testid="stSidebar"] .sidebar-brand-name span {{ color:#13d6c0; }}
+section[data-testid="stSidebar"] .sidebar-brand-subtitle {{ color:#8398a9; font-size:.68rem; letter-spacing:.045em; margin-top:.3rem; }}
+section[data-testid="stSidebar"] .sidebar-profile {{
+    display:flex; align-items:center; gap:.7rem; min-width:0; padding:.72rem .68rem;
+    border:1px solid rgba(108,149,170,.17); border-radius:11px; background:rgba(14,34,50,.72);
+}}
+section[data-testid="stSidebar"] .sidebar-avatar {{
+    width:38px; height:38px; flex:0 0 38px; display:grid; place-items:center; border-radius:50%;
+    color:#06201f; font-size:.9rem; font-weight:750; background:linear-gradient(145deg,#35dfc9,#139f99);
+    box-shadow:0 0 18px rgba(19,214,192,.15);
+}}
+section[data-testid="stSidebar"] .sidebar-profile-copy {{ min-width:0; display:flex; flex-direction:column; gap:.17rem; }}
+section[data-testid="stSidebar"] .sidebar-profile-copy strong {{ color:#e5eff4; font-size:.83rem; font-weight:650; overflow-wrap:anywhere; }}
+section[data-testid="stSidebar"] .sidebar-profile-copy span {{ color:#8b9eac; font-size:.69rem; overflow-wrap:anywhere; }}
+section[data-testid="stSidebar"] .st-key-tracefin_logout button {{ min-height:2.35rem; color:#bacbd4; background:transparent; border:1px solid rgba(126,157,174,.25); font-size:.78rem; }}
+section[data-testid="stSidebar"] .st-key-tracefin_logout button:hover {{ color:#f3fbfd; background:rgba(19,214,192,.08); border-color:rgba(19,214,192,.48); }}
+section[data-testid="stSidebar"] .sidebar-group-label {{ color:#6f8898; font-size:.62rem; font-weight:700; letter-spacing:.16em; padding:.32rem .55rem .05rem; }}
+section[data-testid="stSidebar"] [data-testid="stPageLink"] {{ margin:0; }}
+section[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"] {{
+    position:relative; display:flex; align-items:center; box-sizing:border-box; min-height:42px; width:100%;
+    gap:.62rem; padding:.55rem .68rem .55rem .82rem; border:1px solid transparent; border-radius:8px;
+    color:#aebfc9; font-size:.81rem; line-height:1.3; text-decoration:none; white-space:normal; overflow-wrap:anywhere;
+    transition:color .15s ease, background .15s ease, border-color .15s ease;
+}}
+section[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"]:hover {{ color:#eaf8f8; background:rgba(19,214,192,.075); border-color:rgba(19,214,192,.12); }}
+section[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"]:focus-visible {{ outline:2px solid #20cdbb; outline-offset:2px; }}
+section[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][aria-current="page"] {{
+    color:#e7fbf8; background:linear-gradient(90deg,rgba(17,181,164,.18),rgba(17,181,164,.055)); border-color:rgba(19,214,192,.17);
+}}
+section[data-testid="stSidebar"] [data-testid="stPageLink-NavLink"][aria-current="page"]::before {{
+    content:""; position:absolute; left:-1px; top:7px; bottom:7px; width:2px; border-radius:2px;
+    background:#19d5c0; box-shadow:0 0 10px rgba(25,213,192,.42);
+}}
+section[data-testid="stSidebar"] .sidebar-helper {{ color:#728897; font-size:.66rem; line-height:1.5; padding:.45rem .55rem .15rem; overflow-wrap:anywhere; }}
+section[data-testid="stSidebar"] .sidebar-status-title {{ color:#dce8ee; font-size:.8rem; font-weight:650; margin:0 0 .48rem; }}
+section[data-testid="stSidebar"] .sidebar-status-card {{
+    padding:.72rem .76rem; border:1px solid rgba(102,143,163,.18); border-radius:10px;
+    background:linear-gradient(145deg,rgba(13,32,47,.94),rgba(8,23,36,.94)); color:#9db0bc;
+    font-size:.67rem; line-height:1.55; overflow-wrap:anywhere;
+}}
+section[data-testid="stSidebar"] .sidebar-status-row {{ display:flex; align-items:center; gap:.45rem; margin-bottom:.38rem; color:#d6e4e9; }}
+section[data-testid="stSidebar"] .sidebar-status-row:last-child {{ margin-bottom:0; }}
+section[data-testid="stSidebar"] .sidebar-status-dot {{ width:7px; height:7px; flex:0 0 7px; border-radius:50%; background:{COLORS["success"]}; box-shadow:0 0 9px currentColor; }}
+section[data-testid="stSidebar"] .sidebar-status-dot.is-down {{ background:{COLORS["danger"]}; }}
+section[data-testid="stSidebar"] .sidebar-status-key {{ color:#728a99; }}
+section[data-testid="stSidebar"] .sidebar-model-note {{ color:#758b99; font-size:.64rem; line-height:1.45; padding:.4rem .3rem 0; overflow-wrap:anywhere; }}
+@media (max-width:700px) {{
+    section[data-testid="stSidebar"] {{ width:min(88vw,300px) !important; min-width:min(88vw,300px) !important; }}
 }}
 
 /* ── Metric cards ───────────────────────────────────────────────── */
 .metric-card {{
     background: {COLORS["bg_card"]};
     border: 1px solid {COLORS["border"]};
-    border-radius: 8px;
-    padding: 1.2rem 1.4rem;
-    text-align: center;
+    border-radius: 12px;
+    padding: 1.1rem 1.25rem;
+    min-height: 110px;
     transition: border-color 0.2s;
 }}
 .metric-card:hover {{
@@ -106,7 +172,7 @@ section[data-testid="stSidebar"] .stMarkdown h1 {{
 .card {{
     background: {COLORS["bg_card"]};
     border: 1px solid {COLORS["border"]};
-    border-radius: 8px;
+    border-radius: 12px;
     padding: 1.5rem;
     margin-bottom: 1rem;
 }}
@@ -167,44 +233,95 @@ section[data-testid="stSidebar"] .stMarkdown h1 {{
 
 # ── Sidebar ────────────────────────────────────────────────────────────
 
+def _logout_callback() -> None:
+    from src.auth import clear_authenticated_session
+    clear_authenticated_session(st.session_state)
+    st.query_params.clear()
+
+
+def require_authenticated_user() -> bool:
+    """Compatibility wrapper for the page guard in the auth module."""
+    from src.auth import require_authenticated_user as guard
+    return guard()
+
+
 def render_sidebar() -> None:
     """Render the consistent sidebar with branding and navigation."""
     with st.sidebar:
-        st.markdown(f"# {APP_NAME}")
-        st.caption(f"{APP_CATEGORY} · Console")
-        st.markdown("---")
+        st.markdown(
+            '<div class="sidebar-brand"><div class="sidebar-brand-name">TRACE<span>//</span>FIN</div>'
+            '<div class="sidebar-brand-subtitle">Financial Threat Intelligence</div></div>',
+            unsafe_allow_html=True,
+        )
+        identity = st.session_state.get("auth_user") or {}
+        if identity:
+            display_name = str(identity.get("name") or "Investigator")
+            email = str(identity.get("email") or "")
+            initial = escape(display_name[:1].upper() or "I")
+            st.markdown(
+                '<div class="sidebar-profile">'
+                f'<div class="sidebar-avatar" aria-hidden="true">{initial}</div>'
+                f'<div class="sidebar-profile-copy"><strong>{escape(display_name)}</strong>'
+                f'<span>{escape(email)}</span></div></div>',
+                unsafe_allow_html=True,
+            )
+            st.button("Log out", key="tracefin_logout", on_click=_logout_callback,
+                      use_container_width=True, type="secondary", icon=":material/logout:")
 
-        # Navigation
-        st.page_link("app.py", label="📊 Dashboard")
-        st.page_link("pages/1_Analyze_Advertisement.py", label="🔍 Analyze Advertisement")
-        st.page_link("pages/2_Investigation_Cases.py", label="📋 Investigation Cases")
-        st.page_link("pages/3_Data_Explorer.py", label="🗂️ Data Explorer")
-        st.page_link("pages/4_Image_Analysis.py", label="🖼️ Image Analysis (OCR)")
-        st.page_link("pages/5_Batch_CSV_Analysis.py", label="📑 Batch CSV Analysis")
-
-        st.markdown("---")
+        st.markdown('<div class="sidebar-group-label">OVERVIEW</div>', unsafe_allow_html=True)
+        st.page_link("app.py", label="Dashboard", icon=":material/dashboard:")
+        st.markdown('<div class="sidebar-group-label">INVESTIGATION</div>', unsafe_allow_html=True)
+        st.page_link("pages/1_Analyze_Advertisement.py", label="Analyze advertisement", icon=":material/search:")
+        st.page_link("pages/4_Image_Analysis.py", label="Image / OCR analysis", icon=":material/image:")
+        st.page_link("pages/5_Batch_CSV_Analysis.py", label="Batch CSV analysis", icon=":material/upload_file:")
+        st.page_link("pages/2_Investigation_Cases.py", label="Case management", icon=":material/folder_open:")
+        st.page_link("pages/3_Data_Explorer.py", label="Data explorer", icon=":material/database:")
+        st.markdown(
+            '<div class="sidebar-helper">Inspect advertisement links from the Analyze Advertisement workflow.</div>',
+            unsafe_allow_html=True,
+        )
 
         # Application Status
-        st.markdown("**Application Status**")
+        from src.database import check_database_connection
+        from config import ACTIVE_MODEL_PATH
+        from src.ml_model import load_model
+        from src.hf_model import get_hf_model_status
+        db_info = check_database_connection()
+        tfidf_pipeline = load_model(model_path=ACTIVE_MODEL_PATH)
+        tfidf_loaded = bool(
+            tfidf_pipeline is not None
+            and hasattr(tfidf_pipeline, "named_steps")
+            and {"tfidf", "clf"}.issubset(tfidf_pipeline.named_steps)
+        )
+        hf_status = get_hf_model_status()
+        tfidf_label = "trained pipeline loaded" if tfidf_loaded else "unavailable / invalid artifact"
+        hf_label = hf_status.get("status", "unavailable")
+        hf_base = hf_status.get("base_model") or "base model unknown"
+        storage_label = "Neon PostgreSQL (SSL)" if db_info.get("is_postgres") else "SQLite WAL (Local)"
+        status_text = "Operational" if db_info.get("connected") else "Degraded (No DB)"
+
         st.markdown(
-            f"""
-            <div style="font-size: 0.8rem; color: {COLORS['text_secondary']}; line-height: 1.6; background: {COLORS['bg_card']}; padding: 0.75rem; border-radius: 6px; border: 1px solid {COLORS['border']};">
-                <div><span style="color: {COLORS['success']};">●</span> <strong>Status:</strong> Operational</div>
-                <div><strong>Engine:</strong> Rule + TF-IDF + DistilBERT</div>
-                <div><strong>Storage:</strong> SQLite WAL (Persistent)</div>
-                <div><strong>Environment:</strong> Local / Sandbox</div>
-            </div>
-            """,
+            '<div class="sidebar-status-title">Application Status</div>'
+            '<div class="sidebar-status-card">'
+            f'<div class="sidebar-status-row"><span class="sidebar-status-dot{"" if db_info.get("connected") else " is-down"}"></span><strong>{escape(status_text)}</strong></div>'
+            '<div><span class="sidebar-status-key">Rule detector:</span> heuristic rules (not ML)</div>'
+            f'<div><span class="sidebar-status-key">TF-IDF:</span> {escape(tfidf_label)}</div>'
+            f'<div><span class="sidebar-status-key">Transformer:</span> {escape(str(hf_base))} · {escape(str(hf_label))}</div>'
+            f'<div><span class="sidebar-status-key">Storage:</span> {escape(storage_label)}</div>'
+            f'<div><span class="sidebar-status-key">Records:</span> {int(db_info.get("record_count", 0) or 0)} loaded</div>'
+            '</div>',
             unsafe_allow_html=True,
         )
 
-        st.markdown("")
         st.markdown(
-            '<div class="demo-banner">◆ DEMO DATA MODE ◆</div>',
+            '<div class="sidebar-model-note">Risk decisions combine rule evidence with available local model predictions.</div>',
             unsafe_allow_html=True,
         )
-        st.caption("Explainable rule-based triage.")
-        st.caption("Not a trained ML model.")
+        if not tfidf_loaded or not hf_status.get("available"):
+            st.markdown(
+                '<div class="sidebar-model-note">One or more statistical models are unavailable; results show this in engine status.</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ── Component Helpers ──────────────────────────────────────────────────

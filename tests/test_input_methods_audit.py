@@ -126,6 +126,25 @@ def test_direct_text_suspicious_benchmark(isolated_db):
     assert "Telegram" in saved["ad_text"]
 
 
+def test_legitimate_and_suspicious_loan_ads_end_to_end(isolated_db):
+    legitimate = run_unified_analysis(
+        "ABC Finance offers personal loans at a disclosed annual interest rate. "
+        "Eligibility depends on income and credit checks. Review the repayment schedule "
+        "and terms on our official website before applying."
+    )
+    suspicious = run_unified_analysis(
+        "Guaranteed loan approval with no CIBIL check. Pay a processing fee before "
+        "disbursement and send your OTP and UPI PIN to release the funds."
+    )
+
+    assert legitimate["final_score"] <= 24
+    assert legitimate["final_verdict"] == "LOW RISK"
+    assert suspicious["matched_categories"]
+    assert "Suspicious Financial Solicitation" in suspicious["matched_categories"]
+    assert suspicious["final_verdict"] == "HIGH RISK"
+    assert suspicious["review_required"] is True
+
+
 def test_direct_text_legitimate_benchmark():
     """Test Direct Text input with the legitimate banking advisory benchmark."""
     res = run_unified_analysis(
@@ -551,3 +570,62 @@ def test_cross_method_legitimate_equivalence():
         assert r["final_verdict"] == "LOW RISK", f"Source {sources[idx]} produced false positive"
         assert r["final_score"] <= 30, f"Source {sources[idx]} final score {r['final_score']} too high"
         assert r["rule_score"] == 0, f"Source {sources[idx]} matched unexpected rules"
+
+
+def test_unavailable_models_are_reported_and_persist_unscored(monkeypatch, isolated_db):
+    """The service and database preserve the distinction between missing models and safe."""
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_ml",
+        lambda _text: {"available": False, "risk_label": None, "error": "model artifact missing"},
+    )
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_hf",
+        lambda _text: {"available": False, "risk_label": None, "error": "fine-tuned weights missing"},
+    )
+
+    result = run_unified_analysis("Routine update about quarterly marketing plans.")
+    assert result["final_verdict"] == "INSUFFICIENT EVIDENCE"
+    assert result["final_score"] is None
+    assert result["has_sufficient_evidence"] is False
+    assert "model artifact missing" in " ".join(result["evidence"])
+    assert result["engine_status"] == {
+        "rules": "available",
+        "tfidf": "unavailable",
+        "distilbert": "unavailable",
+    }
+
+    record_id = persist_analysis_record(result)
+    saved = db_module.get_record(record_id)
+    assert saved["risk_level"] == "Insufficient evidence"
+    assert saved["risk_score"] is None
+
+
+def test_local_triage_needs_no_external_ai_credentials(monkeypatch):
+    """Rules and the local TF-IDF model still work without provider credentials."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    # DistilBERT is optional/local. Simulate its weights being unavailable;
+    # this project does not call a hosted inference API as a fallback.
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_hf",
+        lambda _text: {
+            "available": False,
+            "risk_label": None,
+            "error": "Local DistilBERT weights unavailable (offline).",
+        },
+    )
+
+    suspicious = run_unified_analysis(BENCHMARK_SUSPICIOUS_TEXT)
+    legitimate = run_unified_analysis(BENCHMARK_LEGITIMATE_TEXT)
+
+    assert suspicious["final_verdict"] == "HIGH RISK"
+    assert suspicious["rule_score"] >= 50
+    assert suspicious["ml_prediction"] == "High Risk"
+    assert suspicious["engine_status"]["distilbert"] == "unavailable"
+    assert "offline" in " ".join(suspicious["evidence"]).lower()
+
+    assert legitimate["final_verdict"] == "LOW RISK"
+    assert legitimate["rule_score"] == 0
+    assert legitimate["ml_prediction"] == "Safe"
+    assert legitimate["engine_status"]["distilbert"] == "unavailable"

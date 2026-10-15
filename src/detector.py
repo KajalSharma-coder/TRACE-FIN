@@ -192,6 +192,29 @@ _PATTERNS_ACCOUNT_RENTAL = [
 # Category D: Suspicious Financial Solicitation
 _PATTERNS_SUSPICIOUS_SOLICITATION = [
     (
+        re.compile(
+            r"\b(?:cashback|cash\s*back|reward|prize|gift)\b[^\n]{0,100}"
+            r"\b(?:won|winner|claim|claimed|click|collect)\b[^\n]{0,100}"
+            r"\b(?:upi|otp|verification\s+code|pin|payment\s+details?)\b"
+            r"|\b(?:upi|otp|verification\s+code|pin)\b[^\n]{0,100}"
+            r"\b(?:cashback|cash\s*back|reward|prize|gift)\b[^\n]{0,100}"
+            r"\b(?:claim|click|verify|complete)\b",
+            re.I,
+        ),
+        "Unsolicited reward or cashback conditioned on clicking or financial verification",
+    ),
+    (
+        re.compile(
+            r"\b(?:your|the)\s+(?:bank\s+)?account\b[^\n]{0,90}"
+            r"\b(?:blocked|suspended|closed|deactivated|restricted)\b[^\n]{0,90}"
+            r"\b(?:verify|confirm|update|click|visit)\b"
+            r"|\b(?:verify|confirm|update)\b[^\n]{0,100}"
+            r"\b(?:account\s+(?:will\s+be\s+)?(?:blocked|suspended|closed|deactivated)|avoid\s+(?:account\s+)?suspension)\b",
+            re.I,
+        ),
+        "Account-block threat paired with an urgent verification or link action",
+    ),
+    (
         re.compile(r"\b(share|send|provide|give|enter|submit|type|forward|tell|disclose|ask(?:ing)?\s+for)\b[^\n.!?]{0,40}\b(your\s+)?(otp|one[\s\-]?time\s+passwords?|verification\s+codes?|mpin|upi\s+pins?|atm\s+pins?|cvv\d?|netbanking\s+(?:login\s+)?passwords?|banking\s+(?:login\s+)?passwords?|login\s+credentials?|banking\s+credentials?|internet\s+banking\s+passwords?)\b", re.I),
         "Direct request or harvesting of sensitive banking secrets (OTP, PIN, CVV, or password)",
     ),
@@ -232,7 +255,7 @@ _PATTERNS_URGENCY_SECRECY = [
         "Extravagant guarantee of '100% risk-free' financial returns",
     ),
     (
-        re.compile(r"\b(only\s+\d+\s+(left|accounts?\s+remaining|slots?)|hurry\s+up|act\s+fast|urgent\s+deal|last\s+chance|immediate\s+action\s+required)\b", re.I),
+        re.compile(r"\b(only\s+\d+\s+(left|accounts?\s+remaining|slots?)|hurry\s+up|act\s+fast|urgent\s+deal|last\s+chance|immediate\s+action\s+required|(?:click|claim|verify|respond)\s+(?:now|immediately|today)|limited[- ]time\s+(?:offer|reward|claim))\b", re.I),
         "High urgency or artificial scarcity pressure tactics",
     ),
 ]
@@ -242,7 +265,7 @@ _PATTERNS_URGENCY_SECRECY = [
 
 # Educational, cyber safety, regulatory, and benign awareness indicators
 _PATTERNS_AWARENESS_MITIGATION = [
-    re.compile(r"\b(advisory|awareness|warning|alert|beware\s+of|protect\s+yourself|tips\s+to\s+avoid|safety\s+tips|consumer\s+alert|cyber\s+safety)\b", re.I),
+    re.compile(r"\b(security\s+advisory|fraud\s+awareness|scam\s+warning|beware\s+of|protect\s+yourself|tips\s+to\s+avoid|safety\s+tips|consumer\s+alert|cyber\s+safety)\b", re.I),
     re.compile(r"\b(never\s+share|never\s+rent|do\s+not\s+share|do\s+not\s+disclose|banks\s+will\s+never\s+ask|report\s+(fraud|suspicious\s+activity))\b", re.I),
     re.compile(r"\b(regulatory\s+guidelines|central\s+bank|rbi\s+guidelines|as\s+per\s+rbi|dicgc\s+insured)\b", re.I),
     re.compile(r"\b(kyc\s+is\s+mandatory|full\s+kyc\s+required|kyc\s+helps\s+prevent|understanding\s+kyc|why\s+kyc\s+matters)\b", re.I),
@@ -251,6 +274,19 @@ _PATTERNS_AWARENESS_MITIGATION = [
     re.compile(r"\b(processing\s+fee\s+applicable|as\s+per\s+bank\s+(policy|terms|norms)|nominal\s+processing\s+fee|terms\s+and\s+conditions\s+apply|t&c\s+apply|interest\s+rates?\s+apply)\b", re.I),
     re.compile(r"\b(loan\s+processing\s+fees?|interest\s+rates?|flexible\s+tenures?|calculate\s+emi|pre-?approved\s+(?:loans?|offers?)|apply\s+online|home\s+loans?|personal\s+loans?|car\s+loans?|education\s+loans?|fixed\s+deposits?|savings\s+accounts?|annual\s+percentage\s+rate|apr|eligibility\s+criteria)\b", re.I),
 ]
+
+# A conventional one-time-code notification contains the code validity and a
+# clear non-disclosure instruction, without links or an action request. This
+# narrow context helps avoid flagging transactional OTP notices solely because
+# bank-brand/OTP terms are correlated with scams in small training corpora.
+_LEGITIMATE_OTP_NOTICE = re.compile(
+    r"^(?!.*(?:https?://|www\.|click\s+here|verify\s+now|account\s+(?:will\s+be\s+)?(?:blocked|suspended)|claim\s+(?:your\s+)?(?:reward|cashback)))"
+    r"(?=.*\b(?:your\s+)?otp\b[^\n.!?]{0,50}\b(?:is|:)\s*\d{4,8}\b)"
+    r"(?=.*\bvalid\s+for\s+\d+\s*(?:seconds?|secs?|minutes?|mins?)\b)"
+    r"(?=.*\b(?:do\s+not\s+share|never\s+share)\b)"
+    r".*$",
+    re.I | re.S,
+)
 
 
 # ── Extraction Functions ──────────────────────────────────────────────
@@ -376,6 +412,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
             "disclaimer": STANDARD_DISCLAIMER,
             "review_recommendation": "No text provided for analysis.",
             "analysis_mode": "rule_based",
+            "legitimate_transactional_otp": False,
         }
 
     matched_categories: list[str] = []
@@ -522,6 +559,16 @@ def analyze_ad(text: str) -> dict[str, Any]:
                 f"[Contextual Note] Text contains regulatory or warning references ('{first_term}'), but strong sale and bypass indicators remain active."
             )
 
+    legitimate_transactional_otp = bool(
+        raw_score == 0
+        and not matched_rules
+        and _LEGITIMATE_OTP_NOTICE.search(text)
+    )
+    if legitimate_transactional_otp:
+        evidence.append(
+            "[Contextual Legitimate Template] One-time-code notice includes an expiry and non-disclosure instruction, with no link or request to take action."
+        )
+
     # ── Extract Threat Indicators ─────────────────────────────────────────
     urls = _extract_urls(text)
     emails = _extract_emails(text)
@@ -566,6 +613,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
         "review_recommendation": recommendation,
         "analysis_mode": "rule_based",
         "has_mitigation": has_awareness,
+        "legitimate_transactional_otp": legitimate_transactional_otp,
     }
 
 
@@ -608,9 +656,30 @@ def compute_unified_verdict(
 
     models_available = int(ml_avail) + int(hf_avail)
     models_high = int(ml_high) + int(hf_high)
+    legitimate_otp_notice = bool(
+        rule_result
+        and rule_result.get("legitimate_transactional_otp")
+        and rule_score == 0
+        and not rule_result.get("matched_rules")
+    )
+
+    # A narrowly recognized informational OTP template is not a credential
+    # request. It cannot suppress any positive heuristic evidence.
+    if legitimate_otp_notice:
+        final_verdict = "LOW RISK"
+        final_score = 0
+        badge_color = "#22c55e"
+        consensus_status = "Recognized Transactional OTP Notice"
+        explanation = (
+            "This matches an informational one-time-code notice with an expiry and a do-not-share instruction. "
+            "No link, action request, or suspicious financial solicitation was detected."
+        )
+        recommendation = "Routine: Never share the code. If you did not request it, contact your bank through its official channel."
+        investigation_status = "Closed"
+        review_required = False
 
     # 1. Consensus Threat: High rule score confirmed by models, or critical overt rule violation
-    if (rule_score >= 50 and models_high >= 1) or rule_score >= 70 or (rule_score >= 35 and models_high == 2):
+    elif (rule_score >= 50 and models_high >= 1) or rule_score >= 70 or (rule_score >= 35 and models_high == 2):
         final_verdict = "HIGH RISK"
         final_score = max(rule_score, 75 if models_high >= 1 else rule_score)
         badge_color = "#ef4444"
@@ -678,7 +747,13 @@ def compute_unified_verdict(
 
     # 4. Model Alert with No Rules Matched: Ambiguity / Divergence (Conservative Manual Review)
     elif not has_rule_threat and models_high >= 1:
-        if has_mitigation and rule_score == 0 and not ml_high and models_high == 1:
+        if (
+            has_mitigation
+            and rule_score == 0
+            and not (rule_result or {}).get("matched_rules")
+            and not ml_high
+            and models_high == 1
+        ):
             final_verdict = "LOW RISK"
             final_score = 0
             badge_color = "#22c55e"
@@ -695,22 +770,56 @@ def compute_unified_verdict(
             # Deterministic combination: routed to 50 (if both models flag) or 40 (if 1 model flags)
             final_score = 50 if models_high >= 2 else 40
             badge_color = "#eab308"
-            consensus_status = "Model Alert (Manual Review Required)"
+            has_matched_rule_evidence = bool((rule_result or {}).get("matched_rules"))
+            consensus_status = (
+                "Mitigated Rule Evidence + Model Alert (Manual Review Required)"
+                if has_matched_rule_evidence else
+                "Model Alert (Manual Review Required)"
+            )
             model_names = []
             if ml_high:
                 model_names.append("TF-IDF ML")
             if hf_high:
                 model_names.append("DistilBERT")
             models_str = " & ".join(model_names)
-            explanation = (
-                f"Statistical classifier ({models_str}) flagged suspicious vocabulary patterns, "
-                f"but no configured heuristic rules matched. Manual review is required to verify legitimacy."
-            )
-            recommendation = "Manual Review Required: Content flagged by statistical classifier but not matched by explicit heuristic rules. Verify context before taking action."
+            if has_matched_rule_evidence:
+                explanation = (
+                    f"Statistical classifier ({models_str}) flagged suspicious vocabulary patterns. "
+                    "Heuristic rule evidence was reduced by contextual awareness mitigation, but remains visible; "
+                    "manual review is required to resolve the disagreement."
+                )
+                recommendation = (
+                    "Manual Review Required: Review the matched heuristic evidence and awareness context "
+                    "alongside the model alert before taking action."
+                )
+            else:
+                explanation = (
+                    f"Statistical classifier ({models_str}) flagged suspicious vocabulary patterns, "
+                    f"but no configured heuristic rules matched. Manual review is required to verify legitimacy."
+                )
+                recommendation = "Manual Review Required: Content flagged by statistical classifier but not matched by explicit heuristic rules. Verify context before taking action."
             investigation_status = "Reviewing"
             review_required = True
 
-    # 4. Consensus Low Risk / Benign: Neither rules nor models flagged
+    # 5. No engine could assess benignity. A missing model is not a safe
+    # prediction; without rule indicators there is not enough evidence to
+    # produce a LOW RISK verdict.
+    elif models_available == 0:
+        final_verdict = "INSUFFICIENT EVIDENCE"
+        final_score = None
+        badge_color = "#94a3b8"
+        consensus_status = "Models Unavailable; Rule Review Only"
+        explanation = (
+            "No configured heuristic threat patterns matched, and no statistical model was available. "
+            "This is an incomplete assessment, not a confirmed low-risk result."
+        )
+        recommendation = (
+            "Manual Review Required: Check model availability and review the submitted content before treating it as benign."
+        )
+        investigation_status = "Reviewing"
+        review_required = True
+
+    # 6. Consensus Low Risk / Benign: Neither rules nor available models flagged
     else:
         final_verdict = "LOW RISK"
         final_score = min(rule_score, 24)
@@ -723,7 +832,7 @@ def compute_unified_verdict(
 
     return {
         "final_verdict": final_verdict,
-        "final_score": int(min(max(final_score, 0), 100)),
+        "final_score": int(min(max(final_score, 0), 100)) if final_score is not None else None,
         "explanation": explanation,
         "recommendation": recommendation,
         "investigation_status": investigation_status,

@@ -47,6 +47,14 @@ The complete platform roadmap:
 
 Phase 3 introduces a reproducible text classification baseline built using scikit-learn (`TF-IDF + Logistic Regression`) integrated directly alongside Phase 2's explainable heuristic detection engine.
 
+### AI Integration and API Credentials
+
+The documented TRACE//FIN requirements do **not** require OpenAI or another hosted inference API. Advertisement analysis uses the local scikit-learn artifact (`models/financial_ad_classifier.joblib`), the explainable rule engine, and—when its fine-tuned artifacts are installed—the local DistilBERT model under `models/hf_financial_ad_classifier/`. Inference does not need a provider API key and does not fall back to fabricated or remote responses when local models are unavailable; the application reports the unavailable engine and continues with the remaining evidence sources.
+
+Training DistilBERT downloads the public base model from Hugging Face Hub; inference loads the saved project-local tokenizer and weights. `HF_TOKEN` is not currently consumed by the application. The `DATABASE_URL` value shown in `.env.example` is for database access only, not AI inference. Keep local secrets in the ignored `.env` or Streamlit secrets file; do not add real keys to source code or examples.
+
+The fine-tuned `model.safetensors` checkpoint is 256 MB and is excluded from ordinary Git commits because it exceeds GitHub's 100 MB per-file limit. It remains local in this workspace; a fresh clone must obtain/retrain that checkpoint separately before DistilBERT inference is available. The app continues to report the transformer as unavailable and uses its other analysis engines when weights are absent.
+
 ### 1. Dataset Inspection & Governance
 
 The platform inspects two local datasets under `data/`:
@@ -73,12 +81,28 @@ The platform inspects two local datasets under `data/`:
 - **Pipeline:** `sklearn.pipeline.Pipeline`
   1. `TfidfVectorizer`: Sublinear term-frequency scaling, unigrams & bigrams `(1, 2)`, English stop words removal, `min_df=2`, `max_df=0.98`.
   2. `LogisticRegression`: Fixed seed `random_state=42`, `class_weight="balanced"`, `C=1.0`, `solver="lbfgs"`.
-- **Validation Strategy:** Stratified 80/20 train/test split with seed 42.
-  - Training Set: 400 records (202 High Risk, 198 Safe)
-  - Held-out Test Set: 100 records (51 High Risk, 49 Safe)
-- **Leakage Prevention:** The vectorizer and all vocabulary statistics are fitted **strictly on the training split**.
+- **Validation Strategy:** The current training and comparison scripts use a template-grouped, class-stratified train/validation/test split with seed 42. This dataset yields 254 train, 114 validation, and 132 test rows, while keeping normalized template groups disjoint.
+- **Leakage Prevention:** Vectorizer vocabulary and classifier weights are fitted on training rows only; validation is used for candidate selection and test rows are evaluated after selection.
 
-#### Performance on Held-Out Test Split (100 Samples)
+#### Historical Row-Random Artifact Metrics (Not a Generalization Estimate)
+
+The current checked-in `models/model_metrics.json` was generated before template-grouped splitting and reports a random row split. Its perfect score is contaminated by shared templates across partitions and must not be used as evidence of real-world performance. Running the current grouped benchmark is described below.
+
+#### Template-Grouped Candidate Comparison (Current Dataset)
+
+The experimental run used one shared split (train 254; validation 114; held-out test 132), trained each candidate for one epoch with truncation at 128 tokens, selected by validation macro-F1 with High Risk recall as tie-breaker, and evaluated every candidate on test only after selection. Candidate weights were kept in `/tmp` and existing model files were not replaced. The independent unit count is just 8 templates, so the row counts do not represent 132 independent text patterns.
+
+| Candidate | Validation Accuracy / Macro F1 | Test Accuracy | High Risk P / R / F1 | FNR | Test confusion matrix (actual rows, predicted columns: Safe / High Risk) |
+|---|---:|---:|---:|---:|---|
+| TF-IDF + Logistic Regression | 0.4474 / 0.3091 | 0.0000 | 0 / 0 / 0 | 1.0000 | `[[0, 66], [66, 0]]` |
+| Fresh DistilBERT scam-ad fine-tune | 1.0000 / 1.0000 | 1.0000 | 1 / 1 / 1 | 0.0000 | `[[66, 0], [0, 66]]` |
+| ProsusAI/FinBERT with a new scam-ad classifier head | 1.0000 / 1.0000 | 1.0000 | 1 / 1 / 1 | 0.0000 | `[[66, 0], [0, 66]]` |
+
+Validation selected fresh DistilBERT by stable candidate order after the candidates tied on macro-F1 and High Risk recall. ProsusAI/FinBERT was used only as a financial-language encoder with its sentiment classifier head replaced; its original positive/negative/neutral classes are not scam labels. The benchmark does not establish that either transformer generalizes beyond these synthetic templates. The current DistilBERT artifact has no training-split manifest, so its held-out status cannot be verified and it was excluded from candidate selection. The benchmark command is `python scripts/benchmark_ad_models.py --finbert /path/to/ProsusAI-finbert --epochs 1 --max-length 128`.
+
+The ProsusAI model card describes financial sentiment classes, not scam-ad classes: [ProsusAI/finbert model card](https://huggingface.co/ProsusAI/finbert).
+
+The previous table below records the old artifact's random-row test results, not the grouped comparison.
 
 | Metric | Safe (Class 0) | High Risk (Class 1) | Macro Average |
 |---|---|---|---|
@@ -103,7 +127,7 @@ Actual High Risk (1)         0                   51
 
 ### 3. Honest Scientific Limitations
 
-1. **Synthetic Template Overfitting:** Inspection of `back.dataset.csv` revealed that all 500 samples are permutations of 4 syntactic templates for High Risk and 4 templates for Safe. The 100% test score reflects memorization within this narrow synthetic distribution.
+1. **Synthetic Template Overfitting:** After normalizing holder names in template fingerprints, `back.dataset.csv` contains only 8 distinct templates (4 per class). Existing artifact evaluation uses the earlier split implementation and does not establish real-world generalization.
 2. **Real-World Generalization Gap:** Novel real-world criminal phrasing outside these 4 templates (e.g. *"Work from home: receive transfers into your personal account and keep 10% commission"*) can trigger false negatives in the ML model, while being caught immediately by Phase 2's domain heuristics.
 3. **Non-Calibrated Probabilities:** Logistic regression decision probabilities reflect geometric distance to the separating hyperplane on the synthetic dataset, **not** real-world calibrated crime likelihoods.
 4. **Complementary Deployment:** The ML model is deployed as an advisory companion alongside the Phase 2 explainable rule engine, never as an unverified single point of failure.
@@ -133,10 +157,15 @@ TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
 
 ### Feature A: Image & Screenshot OCR Analysis (`pages/4_Image_Analysis.py`)
 - Upload JPG, JPEG, PNG, or WEBP screenshots with size (max 10MB) and dimension (50-8000px) validation.
-- Extracts advertisement text locally using Tesseract OCR with character confidence scoring.
+- Extracts advertisement text locally using EasyOCR with Tesseract fallback and confidence scoring. EasyOCR obtains its official recognition weights on first use if they are not cached; uploaded images remain local.
 - Displays extracted text in an editable text area before analysis, allowing human investigators to correct OCR transcription errors.
 - Runs text through Rule Heuristics, TF-IDF Classifier, and DistilBERT with separate indicators.
 - **Privacy Assurance:** Images are processed in-memory and are **never** persisted to disk or sent to external cloud APIs.
+
+### Supplied URL phishing model
+- `models/url_phishing_classifier.onnx` is the supplied `pirocheto/phishing-url-detection` ONNX artifact. It classifies generic URL phishing likelihood, not financial advertisements. TRACE//FIN surfaces its output as supplementary evidence; it does not modify the detector's score, final label, or recommendation.
+- The archive also contained a pickle model. TRACE//FIN does not load or execute that pickle.
+- The upstream model card's evaluation values are not reproduced as TRACE//FIN measurements; this repository does not include the source evaluation dataset or split needed to independently verify them.
 
 ### Feature B: Batch CSV Advertisement Analysis (`pages/5_Batch_CSV_Analysis.py`)
 - Upload CSV datasets up to 5,000 rows and 50MB. Auto-detects UTF-8, Latin-1, and CP1252 encodings.
@@ -148,8 +177,11 @@ TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
 - Base model: `distilbert/distilbert-base-uncased` with AutoTokenizer and AutoModelForSequenceClassification.
 - **Strict PII Exclusion:** Never uses `ID_No`, `Account_Holder_Name`, `Bank_Account_No`, or `IFSC_Code`.
 - **Grouped Template Splitting:** Groups syntactic template fingerprints (first 35 characters) into isolated train/val/test partitions to prevent near-identical phrasing from leaking across evaluation splits.
+- Holder names embedded in ad text are normalized for grouping, along with account numbers and IFSC codes; each class is stratified across partitions when enough independent templates exist. Current data has only eight normalized templates (four per class), so metrics remain highly template-dependent.
 - **CLI Training Script:** Configurable epochs, batch size, learning rate, random seed, device selection (auto-detects CUDA/CPU), and held-out test evaluation.
 - Backs up previous model directories before saving weights, tokenizer files, and metadata to `models/hf_financial_ad_classifier/`.
+
+The existing local artifact metadata records a 180-example holdout with accuracy 0.7222, high-risk precision 1.0000, recall 0.5968, and confusion matrix `[[56, 0], [50, 74]]` (rows Safe/High Risk, columns predicted Safe/High Risk). Its recorded validation split contained only Safe examples (25/25); that accuracy is not a meaningful two-class validation result. These are historical artifact metrics from the earlier split implementation, not metrics from a retrained model. No retraining was performed during the audit.
 
 ---
 
@@ -178,15 +210,22 @@ TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
 - 5 Intake Modes in dedicated investigator tabs:
   1. `📝 Raw Text`
   2. `🌐 Website URL` (Live Safe Fetch or Domain Syntax Analysis)
-  3. `🖼️ Screenshot / Image` (Tesseract OCR preview & transcription)
+  3. `🖼️ Screenshot / Image` (EasyOCR / Tesseract local OCR preview & transcription)
   4. `📄 PDF Document` (Page count, metadata & extraction)
   5. `📑 Word Document (DOCX)` (Paragraph & table extraction)
 - **Mandatory Human Review Step:** Extracted content is presented in an editable text area alongside source metadata, character/word counters, and extraction warnings. The investigator retains full authority to review, sanitize, or edit the content before initiating detection.
 - **Triple-Engine Triage:** Running analysis triggers Heuristic Rules + TF-IDF Classifier + Hugging Face DistilBERT simultaneously, generating consensus scoring and explainable indicator breakdowns.
 
-### Feature D: Hardened Security & Regression Suite (`tests/test_security.py`, `tests/test_url.py`, `tests/test_docs.py`)
-- Full 86-test automated regression suite with 100% pass rate.
-- Security test matrix explicitly validating SSRF defense boundaries, CSV formula injection vectors, PII exclusion from model pipelines, and SQLite database record persistence.
+### Feature D: Hardened Security & Regression Suite (`tests/test_security.py`, `tests/test_url.py`, `tests/test_docs.py`, `tests/test_database.py`)
+- Automated regression suite: latest repository verification collected 154 tests; 153 passed and 1 was skipped.
+- Security test matrix explicitly validating SSRF defense boundaries, CSV formula injection vectors, PII exclusion from model pipelines, SQL injection resistance, and database record persistence.
+
+### Feature E: Enterprise Storage — Neon-Hosted PostgreSQL Integration (`src/database.py`, `scripts/migrate_sqlite_to_postgres.py`)
+- **Serverless PostgreSQL Primary:** Fully integrated Neon serverless PostgreSQL via SQLAlchemy 2.0 Core and Psycopg 3 (`postgresql+psycopg://`).
+- **Connection Resilience:** Configured with `pool_pre_ping=True`, `pool_size=5`, `max_overflow=10`, and `pool_recycle=1800` to transparently survive Neon compute autosuspend/wake cycles without connection errors.
+- **Graceful Local Fallback:** When `DATABASE_URL` is not configured, the platform transparently falls back to local SQLite in WAL mode (`data/tracefin.db`), guaranteeing complete offline functionality.
+- **Strict Credential Security:** URL masking (`mask_db_url()`) redacts database passwords from UI diagnostics, logs, error messages, and documentation. Credentials resolve securely via environment variables (`DATABASE_URL`), Streamlit secrets (`st.secrets["DATABASE_URL"]`), or local `.env` files.
+- **Idempotent Migration Utility:** Standalone CLI tool (`scripts/migrate_sqlite_to_postgres.py`) to safely transfer legacy SQLite records into Neon PostgreSQL with `--dry-run` transaction rollback support and duplicate skipping.
 
 ---
 
@@ -194,47 +233,56 @@ TRACE//FIN executes **Dual-Engine Triage** on every advertisement:
 
 ```
 trace-fin/
-├── app.py                         # Threat Intelligence Dashboard (Overview, KPIs, Charts)
-├── config.py                      # Design tokens, paths, standardized risk tiers (v0.5.0-phase5)
-├── requirements.txt               # Dependencies (Streamlit, Torch, Transformers, Pytesseract, etc.)
-├── README.md                      # Comprehensive documentation
+├── app.py                             # Threat Intelligence Dashboard (Overview, KPIs, Charts)
+├── config.py                          # Design tokens, paths, standardized risk tiers (v0.5.0-phase5)
+├── requirements.txt                   # Dependencies (Streamlit, SQLAlchemy, Psycopg, Torch, etc.)
+├── README.md                          # Comprehensive architecture and operations documentation
+├── .env.example                       # Sanitized template for environment variables
+├── .streamlit/
+│   └── secrets.toml.example           # Sanitized template for Streamlit secrets
 ├── data/
-│   ├── back.dataset.csv           # Primary financial advertisement dataset (500 records)
-│   ├── cleaned_spam_dataset.csv   # General SMS spam dataset (isolated)
-│   └── tracefin.db                # SQLite persistent storage (WAL mode, automated schema migration)
+│   ├── back.dataset.csv               # Primary financial advertisement dataset (500 records)
+│   ├── cleaned_spam_dataset.csv       # General SMS spam dataset (isolated)
+│   └── tracefin.db                    # SQLite persistent storage (WAL mode, offline fallback)
 ├── models/
-│   ├── financial_ad_classifier.joblib      # Trained scikit-learn TF-IDF + LogReg pipeline
-│   ├── model_metrics.json                 # Persisted TF-IDF evaluation metrics and feature weights
-│   └── hf_financial_ad_classifier/        # Fine-tuned DistilBERT weights, tokenizer & metadata
+│   ├── financial_ad_classifier.joblib # Trained scikit-learn TF-IDF + LogReg pipeline
+│   ├── model_metrics.json             # Persisted TF-IDF evaluation metrics and feature weights
+│   └── hf_financial_ad_classifier/    # Fine-tuned DistilBERT config/tokenizer; large weights excluded (see note)
 ├── pages/
-│   ├── 1_Analyze_Advertisement.py # Unified Multi-Format Console (Text, URL, Image, PDF, DOCX)
-│   ├── 2_Investigation_Cases.py   # Case Management, Filter, Status Workflow & Details
-│   ├── 3_Data_Explorer.py         # Tabular Browser, Multi-indicator Filter, Forensic CSV Export
-│   ├── 4_Image_Analysis.py        # Screenshot & Image OCR Intake, Text Correction & Triage
-│   └── 5_Batch_CSV_Analysis.py    # Bulk CSV Intake, Column Mapping & Formula-Safe Export
+│   ├── 1_Analyze_Advertisement.py     # Unified Multi-Format Console (Text, URL, Image, PDF, DOCX)
+│   ├── 2_Investigation_Cases.py       # Case Management, Filter, Status Workflow & Details
+│   ├── 3_Data_Explorer.py             # Tabular Browser, Multi-indicator Filter, Forensic CSV Export
+│   ├── 4_Image_Analysis.py            # Screenshot & Image OCR Intake, Text Correction & Triage
+│   └── 5_Batch_CSV_Analysis.py        # Bulk CSV Intake, Column Mapping & Formula-Safe Export
 ├── scripts/
-│   ├── train_model.py             # Reproducible TF-IDF + LogReg training CLI
-│   └── train_hf_model.py          # Hugging Face DistilBERT fine-tuning & evaluation CLI
+│   ├── train_model.py                 # Reproducible TF-IDF + LogReg training CLI
+│   ├── train_hf_model.py              # Hugging Face DistilBERT fine-tuning & evaluation CLI
+│   └── migrate_sqlite_to_postgres.py  # Idempotent SQLite to Neon PostgreSQL data migration utility
 ├── src/
-│   ├── database.py                # SQLite persistence layer (idempotent schema migrations)
-│   ├── detector.py                # Explainable rule-based heuristic detection engine (Phase 2)
-│   ├── ml_model.py                # TF-IDF + LogReg ML pipeline, training & consensus (Phase 3)
-│   ├── hf_model.py                # DistilBERT dataset grouping, training & inference (Phase 4)
-│   ├── ocr_engine.py              # Tesseract OCR extraction and image validation (Phase 4)
-│   ├── csv_analyzer.py            # Batch CSV validation, triage engine & formula sanitizer (Phase 4)
-│   ├── url_fetcher.py             # Secure URL validator, SSRF mitigation & HTML parser (Phase 5)
-│   ├── document_extractor.py      # PDF & DOCX in-memory text extraction & safety caps (Phase 5)
-│   ├── sample_data.py             # Synthetic demonstration records
-│   └── ui_components.py           # Reusable dark cybersecurity console UI components
+│   ├── database.py                    # SQLAlchemy 2.0 persistence layer (Neon PostgreSQL primary, SQLite WAL fallback)
+│   ├── detector.py                    # Explainable rule-based heuristic detection engine (Phase 2)
+│   ├── ml_model.py                    # TF-IDF + LogReg ML pipeline, training & consensus (Phase 3)
+│   ├── hf_model.py                    # DistilBERT dataset grouping, training & inference (Phase 4)
+│   ├── ocr_engine.py                  # EasyOCR/Tesseract extraction and image validation (Phase 4)
+│   ├── url_model.py                   # Optional ONNX phishing URL classifier (supplementary only)
+│   ├── csv_analyzer.py                # Batch CSV validation, triage engine & formula sanitizer (Phase 4)
+│   ├── url_fetcher.py                 # Secure URL validator, SSRF mitigation & HTML parser (Phase 5)
+│   ├── document_extractor.py          # PDF & DOCX in-memory text extraction & safety caps (Phase 5)
+│   ├── sample_data.py                 # Synthetic demonstration records
+│   └── ui_components.py               # Reusable dark cybersecurity console UI components & connection badges
 └── tests/
-    ├── test_detector.py           # Phase 2 test suite (20 heuristic tests)
-    ├── test_ml.py                 # Phase 3 test suite (15 dataset, ML & consensus tests)
-    ├── test_ocr.py                # Phase 4 test suite (9 image validation & OCR tests)
-    ├── test_csv.py                # Phase 4 test suite (7 CSV validation & sanitization tests)
-    ├── test_hf.py                 # Phase 4 test suite (6 DistilBERT dependency & dataset tests)
-    ├── test_url.py                # Phase 5 test suite (17 URL syntax, SSRF & redirect tests)
-    ├── test_docs.py               # Phase 5 test suite (7 PDF & DOCX safety extraction tests)
-    └── test_security.py           # Phase 5 security matrix (5 SSRF, CSV injection, PII tests)
+    ├── test_detector.py               # Phase 2 test suite (20 heuristic tests)
+    ├── test_ml.py                     # Phase 3 test suite (15 dataset, ML & consensus tests)
+    ├── test_ocr.py                    # Phase 4 test suite (9 image validation & OCR tests)
+    ├── test_csv.py                    # Phase 4 test suite (7 CSV validation & sanitization tests)
+    ├── test_hf.py                     # Phase 4 test suite (6 DistilBERT dependency & dataset tests)
+    ├── test_url.py                    # Phase 5 test suite (17 URL syntax, SSRF & redirect tests)
+    ├── test_docs.py                   # Phase 5 test suite (7 PDF & DOCX safety extraction tests)
+    ├── test_security.py               # Phase 5 security matrix (5 SSRF, CSV injection, PII tests)
+    ├── test_risk_synthesis.py         # Unified risk synthesis & bounded scoring
+    ├── test_input_methods_audit.py    # Cross-input triage consistency & validation (19 tests)
+    ├── test_ui_sync.py                # Streamlit session-state synchronization suite (11 tests)
+    └── test_database.py               # Database engine, pooling, migration & SQL injection (14 tests)
 ```
 
 ---
@@ -243,7 +291,9 @@ trace-fin/
 
 ### Environment Requirements
 - Python 3.12+ (tested on Python 3.14 under Linux/WSL).
-- System Tesseract OCR:
+- EasyOCR defaults to English. Its official recognition weights may be downloaded into the local cache on first use. Set `TRACEFIN_EASYOCR_LANGUAGES=en,hi` for additional supported languages.
+- Set `TRACEFIN_OCR_ENGINE=tesseract` to prefer Tesseract, `easyocr` to prefer EasyOCR, or leave it unset for EasyOCR-first with Tesseract fallback.
+- Optional system Tesseract fallback:
   - Fedora: `sudo dnf install tesseract`
   - Ubuntu/Debian: `sudo apt-get install tesseract-ocr`
   - macOS: `brew install tesseract`
@@ -273,6 +323,55 @@ python scripts/train_model.py
 python scripts/train_hf_model.py --epochs 3 --batch-size 8 --lr 2e-5
 ```
 
+#### 3. Train and validation-select the sourced scam-message candidate
+```bash
+python scripts/train_expanded_model.py
+```
+This keeps `data/back.dataset.csv` and the existing model artifact unchanged,
+trains a TF-IDF + Logistic Regression candidate using sourced training data,
+and selects it only when its grouped validation macro-F1 (then High Risk recall)
+improves on both the manually labelled scam-message corpus and an ad-only
+training reference. The held-out test partition is evaluated only after
+selection. Read [`data/external/README.md`](data/external/README.md) for dataset
+attribution and scope limitations. The reported external test results cover
+manually labeled scam messages, not representative financial advertisements.
+
+### Database Configuration & Persistence
+
+TRACE//FIN uses **Neon Serverless PostgreSQL** as its primary persistent database, with an automatic, zero-configuration local fallback to **SQLite (WAL mode)** at `data/tracefin.db` when no remote connection string is configured.
+
+#### 1. Configuring Neon PostgreSQL Credentials
+
+Set the connection string in either of the following supported locations (never commit real credentials):
+
+- **Streamlit Secrets (Local or Community Cloud):**
+  Create or edit `.streamlit/secrets.toml` (ignored by git; see template `.streamlit/secrets.toml.example`):
+  ```toml
+  DATABASE_URL = "postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require"
+  ```
+
+- **Environment Variable (Local `.env` or Container / Cloud Deployments):**
+  Create or edit `.env` (ignored by git; see template `.env.example`):
+  ```bash
+  DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require
+  ```
+
+- **Platform Deployment Settings:**
+  - **Streamlit Community Cloud:** App Dashboard → Settings → Secrets → Paste `DATABASE_URL = "..."`.
+  - **Render / Railway / Fly.io / Docker:** Add an Environment Variable named `DATABASE_URL` with your connection string.
+
+#### 2. Migrating Legacy SQLite Data to Neon PostgreSQL
+
+An idempotent migration CLI is provided to safely migrate existing records from `data/tracefin.db` to Neon PostgreSQL:
+
+```bash
+# Preview records to be migrated without modifying the target database (dry run)
+python scripts/migrate_sqlite_to_postgres.py --dry-run
+
+# Execute live migration (idempotent, skips duplicates, preserves existing records)
+python scripts/migrate_sqlite_to_postgres.py
+```
+
 ### Running the Application
 
 ```bash
@@ -281,24 +380,43 @@ streamlit run app.py
 
 Open your browser at **`http://localhost:8501`**.
 
-The SQLite database initializes automatically at `data/tracefin.db`. Existing records are safely migrated without data loss.
+The root page is a public TRACE//FIN overview. **Sign in** and **Enter workspace** open the existing local login flow; after authentication the app opens the protected dashboard. The public dashboard preview uses aggregate saved, non-synthetic data when available. With no saved analyses, its example metrics are explicitly marked illustrative and are never persisted. Logging out returns to the public overview.
+
+Create a local account on first use. TRACE//FIN stores an Argon2id password hash in the `local_users` table in the SQLite database at `data/tracefin.db`; signup establishes a session immediately. Use **Log out** in the sidebar to clear the Streamlit session. There is no default account and no external identity provider is required.
+
+Local authentication is intended for local/demo deployments. Accounts currently share the existing analysis records and case store; this is not multi-user data isolation. Before public production deployment, add a managed identity provider, HTTPS and hardened session controls, account recovery and rate limiting, and tenant ownership/filtering for persisted records and exports. Restrict OS access to the local SQLite file.
+
+The analysis database schema initializes idempotently on startup. The local account table is stored in SQLite independently of any configured analysis database, so local sign-in does not depend on a live external database.
 
 ### Running the Full Test Suite
 
 ```bash
-# Run all 86 tests across all 8 test modules
+# Run the complete automated test suite
 pytest -v
 ```
 
-Coverage (86 passed tests, 100% pass rate):
-- **Heuristics (20 tests):** Empty inputs, benign banking, educational notices, account sales, KYC bypass, mule recruitment, urgency/secrecy, indicator extraction, score bounds.
-- **TF-IDF ML (15 tests):** Token preprocessing, dataset integrity, spam dataset isolation, PII exclusion, reproducible pipeline training, positive/negative class inference, fallback handling, consensus/divergence logic, and database persistence.
-- **OCR Engine (9 tests):** Valid JPEG/PNG/WEBP, empty/corrupt files, undersized/oversized dimensions, None handling, and Tesseract availability.
-- **CSV Batch Processor (7 tests):** Formula injection neutralization (`=`, `+`, `-`, `@`, `\t`), valid/empty/header-only CSV validation, batch triage execution, and safe export.
-- **Hugging Face DistilBERT (6 tests):** Dependency checks, template fingerprinting, grouped partition preparation, class balance verification, empty text inference handling, and missing model fallback.
-- **Secure URL Analysis (17 tests):** Scheme/credential validation, IPv4/IPv6 loopback & private range blocking, cloud metadata host filtering, DNS pre-resolution checks, DNS rebinding mitigation, redirect hop validation, HTML text extraction, and syntax-only mode.
-- **Document Extractor (7 tests):** PDF header validation, scanned PDF blank warnings, DOCX paragraphs and tables, corrupted ZIP archives, decompression ratio limits (ZIP bomb defense), and format router.
-- **Security Matrix (5 tests):** Multi-hop SSRF boundary matrix, CSV formula injection evasion characters, strict PII exclusion from model inference, and database preservation guarantees.
+By default, test execution runs in offline isolation using an in-memory/isolated SQLite engine. To run the optional external PostgreSQL integration test, specify `TEST_DATABASE_URL`:
+
+```bash
+TEST_DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require" pytest tests/test_database.py -k test_neon_live_connection_if_configured
+```
+
+#### Test Suite Coverage (Latest run: 153 passed, 1 skipped)
+
+| Test Module | Scope & Coverage |
+|---|---|
+| `tests/test_detector.py` | Rule-based heuristic detection, KYC bypass, mule solicitations, score bounding, contact indicator parsing |
+| `tests/test_ml.py` | TF-IDF + LogReg pipeline, PII exclusion, dataset distribution, consensus triage & divergence alerts |
+| `tests/test_ocr.py` | Image format validation (JPEG/PNG/WEBP), corruption, bounds checks, Tesseract availability |
+| `tests/test_csv.py` | Batch CSV parsing, multi-encoding support, spreadsheet formula injection neutralization |
+| `tests/test_hf.py` | DistilBERT transformer dependency checks, grouped template splitting, inference contracts |
+| `tests/test_url.py` | Scheme validation, SSRF boundary matrix (private/loopback/cloud metadata), DNS rebinding, HTML triage |
+| `tests/test_docs.py` | In-memory PDF header validation, scanned PDF alerts, DOCX tables, ZIP bomb expansion ratio guards |
+| `tests/test_security.py` | SSRF attack vectors, CSV formula evasion payloads, PII omission guarantees, database integrity |
+| `tests/test_risk_synthesis.py` | Unified 0-100 bounded scoring, rule-matching accuracy, consensus synthesis, unavailable-model regression |
+| `tests/test_input_methods_audit.py` | Cross-input parity across all 5 intake methods (Raw Text, URL, Image OCR, PDF, DOCX, CSV) |
+| `tests/test_ui_sync.py` | Streamlit session-state widget lifecycle synchronization, edit persistence, clear-all reliability |
+| `tests/test_database.py` | SQLAlchemy engine behavior, password masking, SQL injection resistance, persistence and migration utility |
 
 ---
 
@@ -353,6 +471,21 @@ def analyze_url(url_str: str, fetch_content: bool = True) -> dict[str, Any]: ...
 def extract_pdf_text(uploaded_file, max_size_mb: float = 10.0, max_pages: int = 30) -> dict[str, Any]: ...
 def extract_docx_text(uploaded_file, max_size_mb: float = 10.0, max_decompressed_mb: float = 50.0) -> dict[str, Any]: ...
 def extract_document_text(uploaded_file) -> dict[str, Any]: ...
+```
+
+### 8. Database Persistence Layer (`src/database.py`)
+```python
+def mask_db_url(url: str | None) -> str: ...
+def normalize_db_url(url: str | None) -> str | None: ...
+def get_database_url() -> str | None: ...
+def get_engine() -> sqlalchemy.Engine: ...
+def init_db(engine: sqlalchemy.Engine | None = None) -> None: ...
+def save_advertisement(data: dict[str, Any], engine: sqlalchemy.Engine | None = None) -> int | None: ...
+def get_all_advertisements(limit: int = 500, engine: sqlalchemy.Engine | None = None) -> list[dict[str, Any]]: ...
+def get_advertisement_by_id(ad_id: int, engine: sqlalchemy.Engine | None = None) -> dict[str, Any] | None: ...
+def update_investigation_status(ad_id: int, new_status: str, notes: str = "", engine: sqlalchemy.Engine | None = None) -> bool: ...
+def get_dashboard_metrics(engine: sqlalchemy.Engine | None = None) -> dict[str, Any]: ...
+def check_database_connection(engine: sqlalchemy.Engine | None = None) -> dict[str, Any]: ...
 ```
 
 ---

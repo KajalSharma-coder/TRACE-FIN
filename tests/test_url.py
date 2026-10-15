@@ -144,6 +144,22 @@ def test_resolve_and_verify_hostname_dns_failure():
         assert "DNS resolution failed" in err
 
 
+def test_safe_fetch_labels_dns_failure_as_network_error_not_ssrf():
+    with patch("socket.getaddrinfo", side_effect=socket.gaierror(-3, "Temporary failure in name resolution")):
+        result = safe_fetch_url("http://google.com")
+    assert result["success"] is False
+    assert result["failure_category"] == "dns_resolution_failed"
+    assert "DNS resolution failed" in result["error"]
+    assert "SSRF" not in result["error"]
+
+
+def test_safe_fetch_still_blocks_private_ip_as_ssrf():
+    result = safe_fetch_url("http://127.0.0.1/admin")
+    assert result["success"] is False
+    assert result["failure_category"] == "ssrf_blocked"
+    assert "SSRF" in result["error"]
+
+
 # ── 4. HTML Text Extraction ───────────────────────────────────────────
 
 def test_extract_text_from_html():
@@ -279,6 +295,23 @@ def test_url_fetch_failure_preserves_insufficient_evidence():
         assert "https://dead-domain-unreachable.biz/promo" in analysis["urls"]
 
 
+def test_dns_failure_is_not_presented_as_a_suspicious_url_verdict():
+    result = run_unified_analysis(
+        text="URL domain analysis: google.com",
+        source_type="Website URL (Fetch Failed)",
+        source_metadata={
+            "final_url": "http://google.com",
+            "fetch_failure_category": "dns_resolution_failed",
+        },
+        extraction_status=STATUS_EXTRACTION_FAILED,
+        extraction_error="DNS resolution failed for host 'google.com': temporary failure",
+    )
+    assert result["final_verdict"] == "INSUFFICIENT EVIDENCE"
+    assert result["final_score"] is None
+    assert "does not indicate that the URL is suspicious" in result["explanation"]
+    assert "DNS connectivity" in result["recommendation"]
+
+
 def test_legitimate_vs_suspicious_url_content():
     """Verify legitimate banking disclosures score LOW RISK while fraud solicitation scores HIGH RISK."""
     legit_text = (
@@ -345,3 +378,15 @@ def test_direct_text_bare_url_handling():
     assert res["has_sufficient_evidence"] is False
     assert "bare URL" in res["explanation"]
     assert res["urls"] == [bare_url]
+
+
+def test_syntax_only_url_includes_supplementary_model_result(monkeypatch):
+    from src import url_fetcher
+
+    monkeypatch.setattr(url_fetcher, "_classify_url", lambda url: {
+        "available": True, "url": url, "prediction": "Not phishing-like",
+        "phishing_probability": 0.02, "error": None,
+    })
+    result = analyze_url("https://example.test/loan", fetch_content=False)
+    assert result["url_model"]["available"] is True
+    assert result["url_model"]["phishing_probability"] == 0.02

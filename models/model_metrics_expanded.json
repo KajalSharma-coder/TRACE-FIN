@@ -1,0 +1,227 @@
+{
+  "model_version": "tfidf-logreg-v1.0",
+  "algorithm": "TF-IDF (1,2-grams) + LogisticRegression",
+  "selected_model": "financial_ad_classifier.joblib",
+  "expanded_candidate_promoted": false,
+  "task_scope": "financial scam messages, not representative financial advertisements",
+  "validation_candidate_comparison": {
+    "financial_advertisements": {
+      "grouped_ad_only_reference": {
+        "accuracy": 0.4474,
+        "precision_macro": 0.2237,
+        "recall_macro": 0.5,
+        "f1_macro": 0.3091,
+        "precision_by_class": {
+          "Safe": 0.4474,
+          "High Risk": 0.0
+        },
+        "recall_by_class": {
+          "Safe": 1.0,
+          "High Risk": 0.0
+        },
+        "f1_by_class": {
+          "Safe": 0.6182,
+          "High Risk": 0.0
+        },
+        "confusion_matrix_labels": [
+          "Safe",
+          "High Risk"
+        ],
+        "confusion_matrix": [
+          [
+            51,
+            0
+          ],
+          [
+            63,
+            0
+          ]
+        ],
+        "false_negative_rate": 1.0,
+        "samples": 114
+      },
+      "expanded_candidate": {
+        "accuracy": 0.4474,
+        "precision_macro": 0.2237,
+        "recall_macro": 0.5,
+        "f1_macro": 0.3091,
+        "precision_by_class": {
+          "Safe": 0.4474,
+          "High Risk": 0.0
+        },
+        "recall_by_class": {
+          "Safe": 1.0,
+          "High Risk": 0.0
+        },
+        "f1_by_class": {
+          "Safe": 0.6182,
+          "High Risk": 0.0
+        },
+        "confusion_matrix_labels": [
+          "Safe",
+          "High Risk"
+        ],
+        "confusion_matrix": [
+          [
+            51,
+            0
+          ],
+          [
+            63,
+            0
+          ]
+        ],
+        "false_negative_rate": 1.0,
+        "samples": 114
+      }
+    },
+    "manually_labelled_scam_messages": {
+      "existing_model": {
+        "accuracy": 0.42,
+        "precision_macro": 0.4834,
+        "recall_macro": 0.4917,
+        "f1_macro": 0.3779,
+        "precision_by_class": {
+          "Safe": 0.3953,
+          "High Risk": 0.5714
+        },
+        "recall_by_class": {
+          "Safe": 0.85,
+          "High Risk": 0.1333
+        },
+        "f1_by_class": {
+          "Safe": 0.5397,
+          "High Risk": 0.2162
+        },
+        "confusion_matrix_labels": [
+          "Safe",
+          "High Risk"
+        ],
+        "confusion_matrix": [
+          [
+            17,
+            3
+          ],
+          [
+            26,
+            4
+          ]
+        ],
+        "false_negative_rate": 0.8667,
+        "samples": 50
+      },
+      "expanded_candidate": {
+        "accuracy": 0.86,
+        "precision_macro": 0.8543,
+        "recall_macro": 0.8667,
+        "f1_macro": 0.8572,
+        "precision_by_class": {
+          "Safe": 0.7826,
+          "High Risk": 0.9259
+        },
+        "recall_by_class": {
+          "Safe": 0.9,
+          "High Risk": 0.8333
+        },
+        "f1_by_class": {
+          "Safe": 0.8372,
+          "High Risk": 0.8772
+        },
+        "confusion_matrix_labels": [
+          "Safe",
+          "High Risk"
+        ],
+        "confusion_matrix": [
+          [
+            18,
+            2
+          ],
+          [
+            5,
+            25
+          ]
+        ],
+        "false_negative_rate": 0.1667,
+        "samples": 50
+      }
+    }
+  },
+  "selected_model_heldout_test": {
+    "financial_advertisements": null,
+    "manually_labelled_scam_messages": {
+      "accuracy": 0.4272,
+      "precision_macro": 0.4792,
+      "recall_macro": 0.4919,
+      "f1_macro": 0.366,
+      "precision_by_class": {
+        "Safe": 0.413,
+        "High Risk": 0.5455
+      },
+      "recall_by_class": {
+        "Safe": 0.8837,
+        "High Risk": 0.1
+      },
+      "f1_by_class": {
+        "Safe": 0.563,
+        "High Risk": 0.169
+      },
+      "confusion_matrix_labels": [
+        "Safe",
+        "High Risk"
+      ],
+      "confusion_matrix": [
+        [
+          38,
+          5
+        ],
+        [
+          54,
+          6
+        ]
+      ],
+      "false_negative_rate": 0.9,
+      "samples": 103
+    }
+  },
+  "test_metric_caveat": "The legacy model's stored metrics reflect a random 400/100 row split over eight ad templates. Its ad test scores are not reported as leakage-free. Candidate ad test evaluation is withheld because it did not pass validation selection.",
+  "split_counts": {
+    "train": 2619,
+    "financial_ad_validation": 114,
+    "financial_ad_test": 132,
+    "message_validation": 50,
+    "message_test": 103
+  },
+  "train_class_distribution": {
+    "Safe": 1521,
+    "High Risk": 1098
+  },
+  "train_source_counts": {
+    "existing_back_dataset": 11,
+    "indian_scam_ham_mixed_provenance": 2243,
+    "mendeley_train": 365
+  },
+  "data_quality": {
+    "source_rows": 523,
+    "usable_rows": 518,
+    "conflicting_template_groups_excluded": 1,
+    "exact_duplicate_rows_removed": 3,
+    "conflicting_template_rows_removed": 2
+  },
+  "training_quality": {
+    "source_rows_before_filters": {
+      "existing_back_dataset": 254,
+      "indian_scam_ham_mixed_provenance": 2271,
+      "mendeley_train": 365
+    },
+    "heldout_exact_text_overlaps_removed": 0,
+    "conflicting_label_text_rows_removed": 0,
+    "exact_duplicate_rows_removed": 271,
+    "empty_text_rows_removed": 0
+  },
+  "limitations": [
+    "The Indian corpus is a mixture of real and augmented examples without row-level provenance.",
+    "Both public corpora contain scam messages, not representative financial advertisements.",
+    "The manually labelled message corpus is still not representative financial-ad data; the 500-row ad set has only eight template groups.",
+    "The existing DistilBERT checkpoint and text/rule scoring logic are unchanged."
+  ]
+}

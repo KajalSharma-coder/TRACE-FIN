@@ -27,6 +27,9 @@ HF_MODEL_DIR = MODELS_DIR / "hf_financial_ad_classifier"
 HF_METADATA_PATH = HF_MODEL_DIR / "metadata.json"
 HF_BASE_MODEL = "distilbert/distilbert-base-uncased"
 HF_MODEL_VERSION = "distilbert-v1.0"
+HF_PREPROCESSING_VERSION = "ad-pii-normalization-v1"
+HF_TASK_DEFINITION = "binary legitimate vs suspicious financial advertisement classification"
+HF_MAX_LENGTH = 128
 
 # Label mapping — binary classification
 LABEL_MAP = {0: "Safe", 1: "High Risk"}
@@ -72,7 +75,7 @@ def check_hf_dependencies() -> Dict[str, Any]:
     return result
 
 
-def _extract_template_fingerprint(text: str) -> str:
+def _extract_template_fingerprint(text: str, pii_values: Optional[List[str]] = None) -> str:
     """
     Extract a fingerprint for near-duplicate / template detection.
     Uses the first 35 characters after lowercasing and stripping identifiers.
@@ -80,11 +83,30 @@ def _extract_template_fingerprint(text: str) -> str:
     """
     if not isinstance(text, str):
         return ""
-    # Remove account numbers, IFSC codes, names (approximate)
+    # Remove identifiers before grouping. These values are only used to make
+    # split groups; they are never returned as features or passed to a model.
     cleaned = re.sub(r"\b\d{4,}\b", "", text)
     cleaned = re.sub(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", "", cleaned, flags=re.IGNORECASE)
+    for value in pii_values or []:
+        value = str(value).strip()
+        if value and value.lower() != "nan":
+            cleaned = re.sub(re.escape(value), " <PERSON> ", cleaned, flags=re.IGNORECASE)
     cleaned = " ".join(cleaned.lower().split())
     return cleaned[:35]
+
+
+def _normalize_ad_text(text: str, pii_values: Optional[List[str]] = None) -> str:
+    """Remove known personal/banking identifiers consistently at train and inference."""
+    if not isinstance(text, str):
+        return ""
+    cleaned = text
+    for value in pii_values or []:
+        value = str(value).strip()
+        if value and value.lower() != "nan":
+            cleaned = re.sub(re.escape(value), "<PERSON>", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", " <IFSC_CODE> ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b\d{4,}\b", " <ACCOUNT_NUM> ", cleaned)
+    return " ".join(cleaned.split())
 
 
 def prepare_dataset(
@@ -128,10 +150,26 @@ def prepare_dataset(
     texts = df["Advertisement_Text"].astype(str).tolist()
     labels = df["Risk_Label"].map(LABEL2ID).tolist()
 
-    # Template fingerprinting for grouped split
-    fingerprints = [_extract_template_fingerprint(t) for t in texts]
+    # Holder names are excluded from model features. If present within the ad
+    # text, redact them only for fingerprinting so name variants of a template
+    # stay in one partition and names do not survive in split keys.
+    holder_names = (
+        df["Account_Holder_Name"].fillna("").astype(str).tolist()
+        if "Account_Holder_Name" in df.columns else [""] * len(texts)
+    )
+    # Identifiers embedded in Advertisement_Text are not excluded merely by
+    # dropping their source columns. Redact known holder names from model input
+    # as well as from template keys to prevent identity memorization.
+    model_texts = [
+        _normalize_ad_text(text, [name])
+        for text, name in zip(texts, holder_names)
+    ]
+    fingerprints = [
+        _extract_template_fingerprint(text, [name])
+        for text, name in zip(texts, holder_names)
+    ]
     df_work = pd.DataFrame({
-        "text": texts,
+        "text": model_texts,
         "label": labels,
         "fingerprint": fingerprints,
     })
@@ -151,8 +189,11 @@ def prepare_dataset(
     # Grouped split: assign templates to partitions, not individual rows
     np.random.seed(random_state)
     template_labels = {}
+    mixed_label_templates = []
     for fp in unique_templates:
         subset = df_work[df_work["fingerprint"] == fp]
+        if subset["label"].nunique() > 1:
+            mixed_label_templates.append(fp)
         template_labels[fp] = int(subset["label"].mode().iloc[0])
 
     template_df = pd.DataFrame([
@@ -160,41 +201,68 @@ def prepare_dataset(
         for fp, lbl in template_labels.items()
     ])
 
-    # Shuffle templates
-    template_df = template_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
+    # Stratify groups, not individual rows. A global group shuffle previously
+    # put every validation example in one class for this dataset.
+    test_templates: set[str] = set()
+    val_templates: set[str] = set()
+    train_templates: set[str] = set()
+    used_row_split = False
+    enough_groups_per_class = all(
+        sum(label == class_id for label in template_labels.values()) >= 3
+        for class_id in LABEL_MAP.keys()
+    )
 
-    # Split templates into train, val, test groups
-    n_templates = len(template_df)
-    n_test = max(1, int(n_templates * test_size))
-    n_val = max(1, int(n_templates * val_size))
-    n_train = n_templates - n_test - n_val
+    if not mixed_label_templates and enough_groups_per_class:
+        rng = np.random.default_rng(random_state)
+        for class_id in LABEL_MAP.keys():
+            class_groups = [fp for fp, label in template_labels.items() if label == class_id]
+            shuffled = list(rng.permutation(class_groups))
+            n_test = max(1, int(len(shuffled) * test_size))
+            n_val = max(1, int(len(shuffled) * val_size))
+            if n_test + n_val >= len(shuffled):
+                enough_groups_per_class = False
+                break
+            test_templates.update(shuffled[:n_test])
+            val_templates.update(shuffled[n_test:n_test + n_val])
+            train_templates.update(shuffled[n_test + n_val:])
 
-    if n_train < 1:
-        # If too few templates, fall back to simple split
-        warnings.append("Too few templates for grouped split; using simple random split.")
-        indices = np.arange(len(df_work))
-        np.random.shuffle(indices)
-        n_test_rows = max(1, int(len(df_work) * test_size))
-        n_val_rows = max(1, int(len(df_work) * val_size))
-        test_idx = indices[:n_test_rows]
-        val_idx = indices[n_test_rows:n_test_rows + n_val_rows]
-        train_idx = indices[n_test_rows + n_val_rows:]
+    if not enough_groups_per_class or mixed_label_templates:
+        reason = (
+            "Template fingerprints contain mixed labels."
+            if mixed_label_templates else
+            "At least one class has too few templates for all three partitions."
+        )
+        warnings.append(reason + " Falling back to a grouped, non-stratified split; inspect class support before training.")
+        template_df = template_df.sample(frac=1, random_state=random_state).reset_index(drop=True)
+        n_templates = len(template_df)
+        n_test = max(1, int(n_templates * test_size))
+        n_val = max(1, int(n_templates * val_size))
 
-        train_texts = [df_work.iloc[i]["text"] for i in train_idx]
-        train_labels = [df_work.iloc[i]["label"] for i in train_idx]
-        val_texts = [df_work.iloc[i]["text"] for i in val_idx]
-        val_labels = [df_work.iloc[i]["label"] for i in val_idx]
-        test_texts = [df_work.iloc[i]["text"] for i in test_idx]
-        test_labels = [df_work.iloc[i]["label"] for i in test_idx]
-    else:
-        test_templates = set(template_df.iloc[:n_test]["fingerprint"])
-        val_templates = set(template_df.iloc[n_test:n_test + n_val]["fingerprint"])
-        train_templates = set(template_df.iloc[n_test + n_val:]["fingerprint"])
+        if n_test + n_val >= n_templates:
+            warnings.append("Too few templates; falling back to a random row split with possible template leakage.")
+            used_row_split = True
+            indices = np.arange(len(df_work))
+            np.random.default_rng(random_state).shuffle(indices)
+            n_test_rows = max(1, int(len(df_work) * test_size))
+            n_val_rows = max(1, int(len(df_work) * val_size))
+            test_idx = indices[:n_test_rows]
+            val_idx = indices[n_test_rows:n_test_rows + n_val_rows]
+            train_idx = indices[n_test_rows + n_val_rows:]
+            train_texts = [df_work.iloc[i]["text"] for i in train_idx]
+            train_labels = [df_work.iloc[i]["label"] for i in train_idx]
+            val_texts = [df_work.iloc[i]["text"] for i in val_idx]
+            val_labels = [df_work.iloc[i]["label"] for i in val_idx]
+            test_texts = [df_work.iloc[i]["text"] for i in test_idx]
+            test_labels = [df_work.iloc[i]["label"] for i in test_idx]
+        else:
+            test_templates = set(template_df.iloc[:n_test]["fingerprint"])
+            val_templates = set(template_df.iloc[n_test:n_test + n_val]["fingerprint"])
+            train_templates = set(template_df.iloc[n_test + n_val:]["fingerprint"])
 
+    if not used_row_split:
         train_mask = df_work["fingerprint"].isin(train_templates)
         val_mask = df_work["fingerprint"].isin(val_templates)
         test_mask = df_work["fingerprint"].isin(test_templates)
-
         train_texts = df_work[train_mask]["text"].tolist()
         train_labels = df_work[train_mask]["label"].tolist()
         val_texts = df_work[val_mask]["text"].tolist()
@@ -219,6 +287,14 @@ def prepare_dataset(
         "label_map": LABEL_MAP,
         "class_distribution": class_dist,
         "template_count": template_count,
+        "template_groups": {
+            split_name: sorted(set(df_work.loc[
+                df_work["text"].isin(values), "fingerprint"
+            ]))
+            for split_name, values in (
+                ("train", train_texts), ("val", val_texts), ("test", test_texts)
+            )
+        },
         "warnings": warnings,
     }
 
@@ -380,6 +456,8 @@ def train_distilbert(
         metadata = {
             "base_model": HF_BASE_MODEL,
             "model_version": HF_MODEL_VERSION,
+            "preprocessing_version": HF_PREPROCESSING_VERSION,
+            "task_definition": HF_TASK_DEFINITION,
             "label_map": LABEL_MAP,
             "id2label": ID2LABEL,
             "label2id": LABEL2ID,
@@ -571,6 +649,10 @@ def predict_ad_hf(text: str) -> Dict[str, Any]:
         "prediction": None,
         "confidence": None,
         "confidence_pct": None,
+        "class_probabilities": None,
+        "high_risk_score": None,
+        "token_count": None,
+        "max_length": HF_MAX_LENGTH,
         "model_version": HF_MODEL_VERSION,
         "error": None,
         "disclaimer": (
@@ -602,20 +684,35 @@ def predict_ad_hf(text: str) -> Dict[str, Any]:
             _CACHED_HF_MODEL = AutoModelForSequenceClassification.from_pretrained(
                 str(HF_MODEL_DIR)
             )
+            actual_id2label = {
+                str(k): str(v) for k, v in _CACHED_HF_MODEL.config.id2label.items()
+            }
+            if actual_id2label != {"0": "Safe", "1": "High Risk"}:
+                raise ValueError(f"Checkpoint label mapping mismatch: {actual_id2label}")
+            if int(_CACHED_HF_MODEL.config.num_labels) != len(LABEL_MAP):
+                raise ValueError(
+                    f"Checkpoint has {_CACHED_HF_MODEL.config.num_labels} classes; expected {len(LABEL_MAP)}"
+                )
             device = "cuda" if torch.cuda.is_available() else "cpu"
             _CACHED_HF_MODEL.to(torch.device(device))
             _CACHED_HF_MODEL.eval()
             _CACHED_HF_MODEL_DIR = HF_MODEL_DIR
             _CACHED_HF_DEVICE = device
 
+        metadata = get_hf_model_info() or {}
+        inference_text = text.strip()
+        if metadata.get("preprocessing_version") == HF_PREPROCESSING_VERSION:
+            inference_text = _normalize_ad_text(inference_text)
         enc = _CACHED_HF_TOKENIZER(
-            text.strip(), padding=True, truncation=True,
-            max_length=128, return_tensors="pt",
+            inference_text, padding=True, truncation=True,
+            max_length=HF_MAX_LENGTH, return_tensors="pt",
         )
         enc = {k: v.to(torch.device(_CACHED_HF_DEVICE)) for k, v in enc.items()}
 
         with torch.no_grad():
             outputs = _CACHED_HF_MODEL(**enc)
+            if outputs.logits.shape[-1] != len(LABEL_MAP):
+                raise ValueError(f"Model returned {outputs.logits.shape[-1]} classes; expected {len(LABEL_MAP)}")
             probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
             pred_class = probs.argmax(dim=-1).item()
             confidence = probs[0][pred_class].item()
@@ -628,6 +725,12 @@ def predict_ad_hf(text: str) -> Dict[str, Any]:
             "prediction": pred_class,
             "confidence": round(confidence, 4),
             "confidence_pct": round(confidence * 100, 1),
+            "class_probabilities": {
+                LABEL_MAP[index]: round(float(probs[0][index].item()), 4)
+                for index in range(len(LABEL_MAP))
+            },
+            "high_risk_score": round(float(probs[0][LABEL2ID["High Risk"]].item()), 4),
+            "token_count": int(enc["input_ids"].shape[-1]),
         })
         return base_result
 
@@ -646,3 +749,85 @@ def get_hf_model_info() -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.error("Failed to read HF metadata: %s", exc)
         return None
+
+
+def get_hf_model_status() -> Dict[str, Any]:
+    """Report checkpoint readiness and training evidence without running inference."""
+    metadata = get_hf_model_info() or {}
+    config_path = HF_MODEL_DIR / "config.json"
+    config_data: Dict[str, Any] = {}
+    try:
+        if config_path.is_file():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+    except Exception as exc:
+        return {
+            "available": False,
+            "trained": False,
+            "loaded": False,
+            "model_version": None,
+            "error": f"Cannot read local model config: {exc}",
+        }
+
+    has_weights = any((HF_MODEL_DIR / name).is_file() for name in ("model.safetensors", "pytorch_model.bin"))
+    has_tokenizer = any((HF_MODEL_DIR / name).is_file() for name in ("tokenizer.json", "vocab.txt"))
+    expected_id2label = {"0": "Safe", "1": "High Risk"}
+    actual_id2label = {str(k): str(v) for k, v in (config_data.get("id2label") or {}).items()}
+    label_mapping_valid = actual_id2label == expected_id2label
+    has_training_record = bool(
+        metadata.get("trained_at")
+        and metadata.get("training_config")
+        and metadata.get("training_results")
+        and metadata.get("base_model")
+    )
+    trained_for_scam_ads = metadata.get("task_definition") == HF_TASK_DEFINITION
+    deps_available = (
+        __import__("importlib.util", fromlist=["find_spec"]).find_spec("torch") is not None
+        and __import__("importlib.util", fromlist=["find_spec"]).find_spec("transformers") is not None
+    )
+    loaded = _CACHED_HF_MODEL is not None and _CACHED_HF_MODEL_DIR == HF_MODEL_DIR
+    artifact_complete = config_path.is_file() and has_weights and has_tokenizer and label_mapping_valid
+    available = artifact_complete and deps_available
+
+    if loaded and has_training_record and trained_for_scam_ads:
+        status = "loaded · scam-ad fine-tuned"
+    elif loaded and has_training_record:
+        status = "loaded · fine-tuning task unverified"
+    elif loaded:
+        status = "loaded · fine-tuning unverified"
+    elif not artifact_complete:
+        status = "unavailable"
+    elif not deps_available:
+        status = "dependencies missing"
+    elif has_training_record and trained_for_scam_ads:
+        status = "fine-tuned for scam-ad classification"
+    elif has_training_record:
+        status = "fine-tuned; task provenance unverified"
+    else:
+        status = "checkpoint present; fine-tuning unverified"
+
+    errors = []
+    if not has_weights:
+        errors.append("model weight file is missing")
+    if not has_tokenizer:
+        errors.append("tokenizer files are missing")
+    if config_path.is_file() and not label_mapping_valid:
+        errors.append("checkpoint labels do not match Safe=0 / High Risk=1")
+    if not deps_available:
+        errors.append("torch and transformers are required for inference")
+    if artifact_complete and not has_training_record:
+        errors.append("training metadata is missing; fine-tuning status cannot be verified")
+
+    return {
+        "available": available,
+        "trained": has_training_record and label_mapping_valid,
+        "trained_for_scam_ads": has_training_record and trained_for_scam_ads and label_mapping_valid,
+        "task_definition": metadata.get("task_definition"),
+        "loaded": loaded,
+        "status": status,
+        "model_version": metadata.get("model_version") if has_training_record else None,
+        "base_model": metadata.get("base_model"),
+        "trained_at": metadata.get("trained_at"),
+        "label_mapping_valid": label_mapping_valid,
+        "error": "; ".join(errors) if errors else None,
+    }

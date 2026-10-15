@@ -7,6 +7,7 @@ from PIL import Image
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from src import ocr_engine
 from src.ocr_engine import validate_image, extract_text_ocr, is_tesseract_available
 
 
@@ -96,3 +97,38 @@ def test_extract_text_ocr_none_image():
 def test_is_tesseract_available_boolean():
     avail = is_tesseract_available()
     assert isinstance(avail, bool)
+
+
+def test_easyocr_result_normalizes_confidence(monkeypatch):
+    monkeypatch.setenv("TRACEFIN_OCR_ENGINE", "auto")
+    monkeypatch.setattr(ocr_engine, "_extract_easyocr", lambda _image: {
+        "text": "Loan offer", "confidence": 91.2, "error": None,
+        "available": True, "engine": "EasyOCR",
+    })
+    result = extract_text_ocr(Image.new("RGB", (100, 100)))
+    assert result["available"] is True
+    assert result["text"] == "Loan offer"
+    assert result["engine"] == "EasyOCR"
+
+
+def test_easyocr_error_falls_back_to_tesseract(monkeypatch):
+    class _Output:
+        DICT = "dict"
+
+    class _Tesseract:
+        Output = _Output
+
+        @staticmethod
+        def image_to_data(_image, output_type=None):
+            assert output_type == "dict"
+            return {"text": ["Approved", "loan"], "conf": ["90", "80"]}
+
+    monkeypatch.setenv("TRACEFIN_OCR_ENGINE", "auto")
+    monkeypatch.setattr(ocr_engine, "_extract_easyocr", lambda _image: (_ for _ in ()).throw(RuntimeError("weights unavailable")))
+    monkeypatch.setattr(ocr_engine, "is_tesseract_available", lambda: True)
+    monkeypatch.setitem(sys.modules, "pytesseract", _Tesseract())
+    result = extract_text_ocr(Image.new("RGB", (100, 100)))
+    assert result["available"] is True
+    assert result["engine"] == "Tesseract"
+    assert result["text"] == "Approved loan"
+    assert result["confidence"] == 85.0

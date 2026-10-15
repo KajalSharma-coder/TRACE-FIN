@@ -12,14 +12,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
-import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
-from config import DATASET_PATH, METRICS_PATH, MODEL_PATH, MODELS_DIR
+from config import (
+    ACTIVE_METRICS_PATH, ACTIVE_MODEL_PATH, DATASET_PATH, METRICS_PATH,
+    MODEL_PATH, MODELS_DIR,
+)
 
 logger = logging.getLogger("tracefin.ml")
 
@@ -69,54 +70,38 @@ def train_model(
     metrics_path: Path = METRICS_PATH,
     random_state: int = RANDOM_STATE,
     test_size: float = TEST_SIZE,
+    val_size: float = 0.10,
 ) -> Dict[str, Any]:
     """
     Train a reproducible TF-IDF + Logistic Regression text classification baseline.
     
     1. Loads back.dataset.csv.
     2. Validates schema and strictly excludes PII/identifier columns.
-    3. Normalizes tokens to prevent synthetic template memorization of account numbers.
-    4. Performs stratified train/test split.
-    5. Fits vectorizer strictly on training split only (zero data leakage).
-    6. Evaluates test set and saves artifacts to models/.
+    3. Normalizes identifiers and groups template variants before splitting.
+    4. Creates stratified train/validation/test partitions by template group.
+    5. Fits vectorizer strictly on training data only.
+    6. Reports validation and held-out test metrics and saves artifacts.
     """
     if not dataset_path.exists():
         raise FileNotFoundError(f"Training dataset not found at: {dataset_path}")
 
-    # Load dataset
-    df = pd.read_csv(dataset_path)
+    from src.hf_model import prepare_dataset
 
-    # Validate required columns
-    required_cols = ["Advertisement_Text", "Risk_Label"]
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"Required column '{col}' missing from dataset {dataset_path}")
-
-    # Enforce strict exclusion of PII and identifier columns
-    available_cols = set(df.columns)
-    for forbidden in EXCLUDED_COLUMNS:
-        if forbidden in available_cols:
-            logger.info("Enforcing exclusion of identifier column: %s", forbidden)
-
-    # Map target: High Risk -> 1 (Positive), Safe -> 0 (Negative)
-    label_map = {"Safe": 0, "High Risk": 1}
-    unrecognized = set(df["Risk_Label"].unique()) - set(label_map.keys())
-    if unrecognized:
-        raise ValueError(f"Unrecognized labels in Risk_Label column: {unrecognized}")
-
-    # Feature extraction and preprocessing
-    X_raw = df["Advertisement_Text"].astype(str)
-    X_clean = X_raw.apply(preprocess_text)
-    y = df["Risk_Label"].map(label_map).values
-
-    # Stratified train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_clean,
-        y,
+    split = prepare_dataset(
+        dataset_path=dataset_path,
         test_size=test_size,
+        val_size=val_size,
         random_state=random_state,
-        stratify=y,
     )
+    X_train = [preprocess_text(t) for t in split["train_texts"]]
+    X_val = [preprocess_text(t) for t in split["val_texts"]]
+    X_test = [preprocess_text(t) for t in split["test_texts"]]
+    y_train = np.asarray(split["train_labels"])
+    y_val = np.asarray(split["val_labels"])
+    y_test = np.asarray(split["test_labels"])
+    if any(set(y) != {0, 1} for y in (y_train, y_val, y_test)):
+        raise ValueError("Grouped split must contain both Safe and High Risk in each partition")
+    total_samples = len(y_train) + len(y_val) + len(y_test)
 
     # Pipeline definition: sublinear_tf scales down repeated tokens, min_df eliminates singletons
     pipeline = Pipeline([
@@ -145,16 +130,23 @@ def train_model(
     # Fit pipeline on training data only
     pipeline.fit(X_train, y_train)
 
+    val_pred = pipeline.predict(X_val)
+    val_report = classification_report(
+        y_val, val_pred, labels=[0, 1], target_names=["Safe", "High Risk"],
+        output_dict=True, zero_division=0,
+    )
+    val_cm = confusion_matrix(y_val, val_pred, labels=[0, 1]).tolist()
+
     # Evaluate on held-out test split
     y_pred = pipeline.predict(X_test)
-    y_proba = pipeline.predict_proba(X_test)[:, 1]
 
     acc = float(accuracy_score(y_test, y_pred))
     report = classification_report(
         y_test,
         y_pred,
-        target_names=["Safe", "High Risk"],
+        labels=[0, 1], target_names=["Safe", "High Risk"],
         output_dict=True,
+        zero_division=0,
     )
     cm = confusion_matrix(y_test, y_pred).tolist()
 
@@ -182,24 +174,21 @@ def train_model(
         "algorithm": "TF-IDF (1,2-grams) + LogisticRegression",
         "random_state": random_state,
         "dataset_path": str(dataset_path),
-        "total_samples": int(len(df)),
+        "total_samples": int(total_samples),
         "train_samples": int(len(X_train)),
+        "validation_samples": int(len(X_val)),
         "test_samples": int(len(X_test)),
-        "class_distribution": {
-            "total": {
-                "High Risk": int((y == 1).sum()),
-                "Safe": int((y == 0).sum()),
-            },
-            "train": {
-                "High Risk": int((y_train == 1).sum()),
-                "Safe": int((y_train == 0).sum()),
-            },
-            "test": {
-                "High Risk": int((y_test == 1).sum()),
-                "Safe": int((y_test == 0).sum()),
-            },
+        "template_count": split["template_count"],
+        "class_distribution": split["class_distribution"],
+        "validation": {
+            "accuracy": round(float(accuracy_score(y_val, val_pred)), 4),
+            "macro_f1": round(float(val_report["macro avg"]["f1-score"]), 4),
+            "confusion_matrix": val_cm,
         },
         "accuracy": round(acc, 4),
+        "false_negative_rate": round(
+            cm[1][0] / sum(cm[1]), 4
+        ) if sum(cm[1]) else None,
         "confusion_matrix": {
             "true_negatives_safe": cm[0][0],
             "false_positives": cm[0][1],
@@ -226,8 +215,8 @@ def train_model(
             "safe_signals": top_safe_features,
         },
         "limitations": [
-            "Trained on back.dataset.csv (500 synthetic records with 4 distinct syntactic templates per class).",
-            "High test metrics (100% on synthetic split) reflect template memorization within this narrow distribution.",
+            "back.dataset.csv contains only eight normalized text templates (four per class); row-level sample support overstates independent evaluation size.",
+            "Template-grouped test results are unstable because the held-out partition contains only one template group per class.",
             "May exhibit false negatives on real-world phrasing with unseen criminal vernacular.",
             "Must be utilized in conjunction with the explainable rule-based detector.",
         ],
@@ -254,11 +243,12 @@ _CACHED_METRICS_PATH: Optional[Path] = None
 
 
 def load_model(
-    model_path: Path = MODEL_PATH,
+    model_path: Optional[Path] = None,
     force_reload: bool = False,
 ) -> Optional[Pipeline]:
     """Load model pipeline from disk with in-memory caching."""
     global _CACHED_MODEL, _CACHED_MODEL_PATH
+    model_path = Path(model_path or ACTIVE_MODEL_PATH)
     if _CACHED_MODEL is not None and _CACHED_MODEL_PATH == model_path and not force_reload:
         return _CACHED_MODEL
 
@@ -275,11 +265,12 @@ def load_model(
 
 
 def get_model_metrics(
-    metrics_path: Path = METRICS_PATH,
+    metrics_path: Optional[Path] = None,
     force_reload: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Load stored evaluation metrics from disk."""
     global _CACHED_METRICS, _CACHED_METRICS_PATH
+    metrics_path = Path(metrics_path or ACTIVE_METRICS_PATH)
     if _CACHED_METRICS is not None and _CACHED_METRICS_PATH == metrics_path and not force_reload:
         return _CACHED_METRICS
 
@@ -298,7 +289,7 @@ def get_model_metrics(
 
 def predict_ad_ml(
     text: str,
-    model_path: Path = MODEL_PATH,
+    model_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Run ML inference on advertisement text.
@@ -313,6 +304,7 @@ def predict_ad_ml(
     - disclaimer: honest documentation that scores are synthetic logistic decisions, not calibrated probabilities
     """
     model = load_model(model_path=model_path)
+    model_version = getattr(model, "tracefin_model_version", MODEL_VERSION) if model is not None else MODEL_VERSION
 
     if model is None:
         return {
@@ -336,7 +328,7 @@ def predict_ad_ml(
             "high_risk_score": None,
             "confidence": None,
             "confidence_pct": None,
-            "model_version": MODEL_VERSION,
+            "model_version": model_version,
             "top_signals": [],
             "error": "Input text is empty.",
             "disclaimer": "Cannot analyze empty text.",
@@ -395,7 +387,7 @@ def predict_ad_ml(
             "high_risk_score": round(high_risk_score, 4),
             "confidence": round(confidence, 4),
             "confidence_pct": round(confidence * 100, 1),
-            "model_version": MODEL_VERSION,
+            "model_version": model_version,
             "top_signals": top_signals,
             "error": None,
             "disclaimer": (
@@ -412,7 +404,7 @@ def predict_ad_ml(
             "high_risk_score": None,
             "confidence": None,
             "confidence_pct": None,
-            "model_version": MODEL_VERSION,
+            "model_version": model_version,
             "top_signals": [],
             "error": f"Inference exception: {exc}",
             "disclaimer": "Error occurred during ML scoring.",

@@ -14,7 +14,7 @@ from src.database import generate_record_id, get_record, init_db, insert_record
 from src.detector import analyze_ad, compute_unified_verdict
 from src.hf_model import get_hf_model_info, predict_ad_hf
 from src.ml_model import get_model_metrics, predict_ad_ml
-from src.ocr_engine import extract_text_ocr, is_tesseract_available, validate_image
+from src.ocr_engine import extract_text_ocr, is_tesseract_available, is_easyocr_available, validate_image
 from src.sample_data import seed_demo_data
 from src.ui_components import (
     inject_global_css,
@@ -37,6 +37,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+from src.auth import require_authenticated_user
+if not require_authenticated_user():
+    st.stop()
+
 init_db()
 seed_demo_data()
 inject_global_css()
@@ -48,14 +52,11 @@ st.caption("Investigative Intake for Social Media Screenshots, Chat Posters, & D
 render_demo_banner()
 
 # System dependency check banner
-tesseract_ok = is_tesseract_available()
-if not tesseract_ok:
+ocr_runtime_ok = is_easyocr_available() or is_tesseract_available()
+if not ocr_runtime_ok:
     st.warning(
-        "⚠️ **Tesseract OCR binary not detected on this host.**\n\n"
-        "Image upload and preview will work, but text extraction requires system Tesseract:\n"
-        "- Fedora: `sudo dnf install tesseract`\n"
-        "- Ubuntu/Debian: `sudo apt-get install tesseract-ocr`\n"
-        "- macOS: `brew install tesseract`"
+        "No local OCR engine is installed. Image upload and preview remain available. "
+        "Install EasyOCR with `pip install -r requirements.txt`, or install system Tesseract as a fallback."
     )
 
 # ── Session State ──────────────────────────────────────────────────────
@@ -99,21 +100,18 @@ if uploaded_file is not None:
 
         with col_img_right:
             st.markdown("##### Optical Character Recognition (OCR)")
-            st.caption("Extract text using local Tesseract engine without sending media to external cloud APIs.")
+            st.caption("Extract text with local EasyOCR (or Tesseract fallback); images are not sent to a cloud service.")
 
             if st.button("⚡ Extract Text via Local OCR", type="primary", use_container_width=True):
-                if not tesseract_ok:
-                    st.error("Tesseract binary is not installed on system. See dependency instructions above.")
-                else:
-                    with st.spinner("Extracting text from image…"):
-                        ocr_res = extract_text_ocr(val_res["image"])
-                        if ocr_res["available"] and ocr_res["text"].strip():
-                            st.session_state.ocr_extracted_text = ocr_res["text"].strip()
-                            st.session_state.ocr_confidence = ocr_res.get("confidence")
-                            st.success(f"✓ Extracted text detected with ~{ocr_res.get('confidence', 0):.1f}% average OCR confidence.")
-                        else:
-                            st.warning(f"⚠️ {ocr_res.get('error', 'No readable text identified in image.')}")
-                            st.session_state.ocr_extracted_text = ""
+                with st.spinner("Extracting text locally…"):
+                    ocr_res = extract_text_ocr(val_res["image"])
+                    if ocr_res["available"] and ocr_res["text"].strip():
+                        st.session_state.ocr_extracted_text = ocr_res["text"].strip()
+                        st.session_state.ocr_confidence = ocr_res.get("confidence")
+                        st.success(f"✓ {ocr_res.get('engine', 'OCR')} extracted text with ~{ocr_res.get('confidence', 0):.1f}% average confidence.")
+                    else:
+                        st.warning(f"⚠️ {ocr_res.get('error', 'No readable text identified in image.')}")
+                        st.session_state.ocr_extracted_text = ""
 
 # ── Editable Text Verification ─────────────────────────────────────────
 st.markdown('<div class="section-header">2. Verify & Edit Extracted Content</div>', unsafe_allow_html=True)
@@ -171,7 +169,7 @@ if st.session_state.image_analyzed_record_id:
             verdict = run_unified_analysis(rec.get("ad_text", ""), source_type="Image OCR")
 
         final_verdict = verdict["final_verdict"]
-        final_score = int(verdict["final_score"]) if verdict.get("final_score") is not None else 0
+        final_score = int(verdict["final_score"]) if verdict.get("final_score") is not None else None
         explanation = verdict["explanation"]
         recommendation = verdict["recommendation"]
         status = verdict["investigation_status"]
@@ -186,6 +184,11 @@ if st.session_state.image_analyzed_record_id:
             v_bg = "rgba(234, 179, 8, 0.12)"
             v_border = "rgba(234, 179, 8, 0.5)"
             v_icon = "⚠️"
+        elif final_verdict == "INSUFFICIENT EVIDENCE":
+            v_color = "#94a3b8"
+            v_bg = "rgba(148, 163, 184, 0.12)"
+            v_border = "rgba(148, 163, 184, 0.5)"
+            v_icon = "🔍"
         else:
             v_color = "#22c55e"
             v_bg = "rgba(34, 197, 94, 0.12)"
@@ -196,6 +199,11 @@ if st.session_state.image_analyzed_record_id:
         st.markdown('<div class="section-header">3. Threat Analysis Dossier & Unified Verdict</div>', unsafe_allow_html=True)
 
         # ── 1. Prominent Verdict Card ─────────────────────────────────
+        score_display = (
+            f'{final_score} <span style="font-size: 1.1rem; color: #94a3b8; font-weight: 500;">/ 100</span>'
+            if final_score is not None else
+            '<span style="font-size: 1.6rem; color: #94a3b8;">N/A</span>'
+        )
         st.markdown(
             f"""
             <div style="background: {v_bg}; border: 2px solid {v_border}; border-radius: 10px; padding: 1.5rem 1.8rem; margin: 1rem 0;">
@@ -209,7 +217,7 @@ if st.session_state.image_analyzed_record_id:
                     <div style="text-align: right;">
                         <span style="font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1.5px; color: #94a3b8; font-weight: 600;">FINAL RISK SCORE</span>
                         <div style="font-size: 2.4rem; font-weight: 800; color: #f8fafc; line-height: 1.2;">
-                            {final_score} <span style="font-size: 1.1rem; color: #94a3b8; font-weight: 500;">/ 100</span>
+                            {score_display}
                         </div>
                     </div>
                 </div>
@@ -238,6 +246,9 @@ if st.session_state.image_analyzed_record_id:
 
         with ev_col:
             st.markdown("**Rule Engine Evidence Matches**")
+            for item in verdict.get("evidence", []):
+                if "[Model Availability]" in str(item):
+                    st.warning(str(item))
             matched_rules = verdict.get("matched_rules", [])
             if matched_rules:
                 for r in matched_rules:

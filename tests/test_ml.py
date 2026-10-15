@@ -116,8 +116,13 @@ def test_train_model_generates_artifacts(tmp_path):
 
     # Check metrics structure
     assert metrics["total_samples"] == 500
-    assert metrics["train_samples"] == 400
-    assert metrics["test_samples"] == 100
+    assert metrics["train_samples"] + metrics["validation_samples"] + metrics["test_samples"] == 500
+    assert metrics["template_count"] == 8
+    assert metrics["train_samples"] == 254
+    assert metrics["validation_samples"] == 114
+    assert metrics["test_samples"] == 132
+    assert metrics["class_distribution"]["val"] == {"Safe": 51, "High Risk": 63}
+    assert "false_negative_rate" in metrics
     assert "accuracy" in metrics
     assert "classification_report" in metrics
     assert "confusion_matrix" in metrics

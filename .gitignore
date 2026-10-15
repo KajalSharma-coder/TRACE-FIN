@@ -23,6 +23,7 @@ env/
 # Environment / secrets
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
@@ -42,3 +43,7 @@ Thumbs.db
 # Exports / generated artifacts
 exports/
 exports/*.csv
+
+# Hugging Face checkpoint weights exceed GitHub's standard 100 MB file limit.
+models/hf_financial_ad_classifier/*.safetensors
+models/hf_financial_ad_classifier/pytorch_model.bin

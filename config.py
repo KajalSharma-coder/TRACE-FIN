@@ -4,6 +4,7 @@ Central configuration for paths, constants, and design tokens.
 """
 
 from pathlib import Path
+import json
 
 # ── Paths ──────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -13,10 +14,32 @@ MODELS_DIR = PROJECT_ROOT / "models"
 DB_PATH = DATA_DIR / "tracefin.db"
 MODEL_PATH = MODELS_DIR / "financial_ad_classifier.joblib"
 METRICS_PATH = MODELS_DIR / "model_metrics.json"
+EXPANDED_MODEL_PATH = MODELS_DIR / "financial_ad_classifier_expanded.joblib"
+EXPANDED_METRICS_PATH = MODELS_DIR / "model_metrics_expanded.json"
+MODEL_SELECTION_PATH = MODELS_DIR / "active_ml_model.json"
 DATASET_PATH = DATA_DIR / "back.dataset.csv"
 SPAM_DATASET_PATH = DATA_DIR / "cleaned_spam_dataset.csv"
+EXPANDED_DATASET_PATH = DATA_DIR / "financial_scam_messages_expanded.csv"
 HF_MODEL_DIR = MODELS_DIR / "hf_financial_ad_classifier"
 HF_METRICS_PATH = HF_MODEL_DIR / "metadata.json"
+
+
+def get_active_ml_artifacts() -> tuple[Path, Path]:
+    """Use a validated, explicitly selected expanded model or legacy defaults."""
+    try:
+        selection = json.loads(MODEL_SELECTION_PATH.read_text(encoding="utf-8"))
+        if (
+            selection.get("selected_model") == EXPANDED_MODEL_PATH.name
+            and EXPANDED_MODEL_PATH.is_file()
+            and EXPANDED_METRICS_PATH.is_file()
+        ):
+            return EXPANDED_MODEL_PATH, EXPANDED_METRICS_PATH
+    except (OSError, ValueError, TypeError):
+        pass
+    return MODEL_PATH, METRICS_PATH
+
+
+ACTIVE_MODEL_PATH, ACTIVE_METRICS_PATH = get_active_ml_artifacts()
 
 # Ensure directories exist at import time
 DATA_DIR.mkdir(exist_ok=True)

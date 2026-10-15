@@ -89,6 +89,122 @@ def test_legitimate_salary_credit():
     assert "Account & Payment Instrument Sale" not in res["matched_categories"]
 
 
+def test_legitimate_loan_ad_not_flagged_as_high_risk():
+    text = (
+        "ABC Finance offers personal loans at a disclosed annual interest rate. "
+        "Eligibility depends on income and credit checks. Review the repayment schedule "
+        "and terms on our official website before applying."
+    )
+    res = analyze_ad(text)
+    assert res["risk_score"] <= 24
+    assert res["risk_level"] == "Low"
+    assert "KYC Evasion & Verification Bypass" not in res["matched_categories"]
+
+
+def test_borderline_loan_wording_has_no_scam_evidence():
+    res = analyze_ad("Quick loan available. Contact our office for product details.")
+    assert res["risk_score"] <= 24
+    assert res["matched_rules"] == []
+
+
+def test_bank_block_threat_plus_verification_link_is_not_mitigated_by_alert_word():
+    rule = analyze_ad(
+        "SBI ALERT: Your account will be blocked today. Verify immediately "
+        "at bit.ly/sbi-verify to avoid suspension."
+    )
+    assert rule["has_mitigation"] is False
+    assert rule["risk_score"] >= 25
+    assert any("Account-block threat" in item["rule_name"] for item in rule["matched_rules"])
+    verdict = compute_unified_verdict(
+        rule,
+        {"available": True, "risk_label": "Safe", "confidence": 0.59},
+        {"available": True, "risk_label": "High Risk", "confidence": 0.93},
+    )
+    assert verdict["final_verdict"] in {"MEDIUM RISK", "HIGH RISK"}
+    assert verdict["review_required"] is True
+
+
+def test_unearned_cashback_plus_upi_verification_is_suspicious():
+    rule = analyze_ad(
+        "Congratulations, you won a cashback reward. Click now to claim it and "
+        "complete UPI verification."
+    )
+    assert rule["risk_score"] >= 25
+    assert any("Unsolicited reward" in item["rule_name"] for item in rule["matched_rules"])
+    verdict = compute_unified_verdict(
+        rule,
+        {"available": True, "risk_label": "Safe", "confidence": 0.59},
+        {"available": True, "risk_label": "High Risk", "confidence": 0.78},
+    )
+    assert verdict["final_verdict"] in {"MEDIUM RISK", "HIGH RISK"}
+    assert verdict["review_required"] is True
+
+
+def test_expiring_otp_notice_with_do_not_share_is_not_overridden_by_models():
+    rule = analyze_ad(
+        "HDFC: Your OTP for login is 482913. Valid for 5 min. Do not share with anyone."
+    )
+    assert rule["legitimate_transactional_otp"] is True
+    verdict = compute_unified_verdict(
+        rule,
+        {"available": True, "risk_label": "High Risk", "confidence": 0.56},
+        {"available": True, "risk_label": "High Risk", "confidence": 0.92},
+    )
+    assert verdict["final_verdict"] == "LOW RISK"
+    assert verdict["final_score"] == 0
+    assert verdict["consensus_status"] == "Recognized Transactional OTP Notice"
+
+
+def test_legitimate_bank_transaction_notification_remains_benign():
+    rule = analyze_ad(
+        "SBI: Rs 2500 debited from your account ending 4521 at a merchant. "
+        "Transaction reference 8823456789. For queries call customer support."
+    )
+    verdict = compute_unified_verdict(
+        rule,
+        {"available": True, "risk_label": "Safe", "confidence": 0.71},
+        {"available": True, "risk_label": "Safe", "confidence": 0.95},
+    )
+    assert verdict["final_verdict"] == "LOW RISK"
+    assert verdict["final_score"] == 0
+
+
+def test_severe_loan_scam_evidence_cannot_be_downgraded_by_model_disagreement():
+    rule = analyze_ad(
+        "Guaranteed loan approval, no CIBIL check. Pay Rs 2500 processing fee "
+        "before disbursement; send OTP and UPI PIN for verification."
+    )
+    verdict = compute_unified_verdict(
+        rule,
+        {"available": True, "risk_label": "Safe", "confidence": 0.55},
+        {"available": False, "risk_label": None, "error": "offline"},
+    )
+    assert rule["risk_score"] >= 50
+    assert verdict["final_verdict"] == "HIGH RISK"
+    assert verdict["final_score"] >= rule["risk_score"]
+    assert verdict["review_required"] is True
+
+
+def test_rule_evidence_and_model_disagreement_cannot_be_hidden_by_awareness_mitigation():
+    text = (
+        "Cyber safety warning: scammers ask loan applicants to pay an upfront fee and "
+        "send OTP and UPI PIN before disbursement. Never share OTPs or pay unverified lenders."
+    )
+    rule = analyze_ad(text)
+    assert rule["has_mitigation"] is True
+    assert rule["matched_rules"]
+    assert rule["risk_score"] == 0  # Awareness context mitigates the rule score.
+
+    verdict = compute_unified_verdict(
+        rule,
+        {"available": True, "risk_label": "Safe", "confidence": 0.8},
+        {"available": True, "risk_label": "High Risk", "confidence": 0.8},
+    )
+    assert verdict["final_verdict"] == "MEDIUM RISK"
+    assert verdict["final_score"] == 40
+    assert verdict["review_required"] is True
+
+
 # ── 3. Repeated Indicators and Score Bounds ─────────────────────────────
 
 def test_repeated_indicators_bounded():
@@ -204,6 +320,28 @@ def test_unified_verdict_consensus_safe():
     assert verdict["investigation_status"] == "Closed"
     assert verdict["review_required"] is False
     assert "Routine" in verdict["recommendation"]
+
+
+def test_unified_verdict_with_all_models_unavailable_is_unscored():
+    """Missing classifiers cannot turn a no-rule-match into a safe assessment."""
+    rule_res = {
+        "risk_score": 0,
+        "risk_level": "Low",
+        "matched_categories": [],
+        "matched_rules": [],
+        "evidence": ["No configured rules matched."],
+    }
+    verdict = compute_unified_verdict(
+        rule_res,
+        {"available": False, "risk_label": None, "error": "artifact missing"},
+        {"available": False, "risk_label": None, "error": "weights missing"},
+    )
+
+    assert verdict["final_verdict"] == "INSUFFICIENT EVIDENCE"
+    assert verdict["final_score"] is None
+    assert verdict["investigation_status"] == "Reviewing"
+    assert verdict["review_required"] is True
+    assert "not a confirmed low-risk" in verdict["explanation"]
 
 
 def test_unified_verdict_rule_threat_ml_safe():

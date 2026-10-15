@@ -13,6 +13,18 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("tracefin.url")
 
+
+def _classify_url(url: str) -> Dict[str, Any]:
+    """Run optional URL-model inference without blocking syntax/fetch analysis."""
+    try:
+        from src.url_model import classify_url
+        return classify_url(url)
+    except Exception as exc:
+        logger.warning("URL classification unavailable: %s", exc)
+        return {"available": False, "url": url, "prediction": None,
+                "phishing_probability": None, "model": "pirocheto/phishing-url-detection (ONNX)",
+                "error": str(exc)}
+
 # Limits & Timeouts
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MB limit
 DEFAULT_TIMEOUT_SECONDS = 5.0
@@ -207,6 +219,17 @@ def resolve_and_verify_hostname(hostname: str, port: int = 443) -> Tuple[bool, L
     return True, resolved_ips, None
 
 
+def _is_ssrf_rejection(reason: Optional[str]) -> bool:
+    """Separate resolved unsafe targets from DNS/network lookup failures."""
+    if not reason:
+        return False
+    message = reason.lower()
+    return any(marker in message for marker in (
+        "unsafe address", "ssrf", "private network", "loopback", "link-local",
+        "cloud metadata", "multicast", "reserved address", "unspecified address",
+    ))
+
+
 def extract_text_from_html(html_content: str) -> Tuple[str, str]:
     """
     Extract title and clean, readable text from HTML content.
@@ -272,6 +295,7 @@ def safe_fetch_url(
         "indicators": [],
         "warnings": [],
         "error": None,
+        "failure_category": None,
     }
 
     current_url = url_str
@@ -291,7 +315,12 @@ def safe_fetch_url(
         is_safe, ips, dns_err = resolve_and_verify_hostname(hostname, port)
         result["resolved_ips"] = ips
         if not is_safe:
-            result["error"] = f"SSRF Protection Alert at hop {hop}: {dns_err}"
+            if _is_ssrf_rejection(dns_err):
+                result["failure_category"] = "ssrf_blocked"
+                result["error"] = f"SSRF protection blocked hop {hop}: {dns_err}"
+            else:
+                result["failure_category"] = "dns_resolution_failed"
+                result["error"] = dns_err or f"DNS resolution failed for host '{hostname}'."
             return result
 
         # 3. Perform request with manual redirect handling and streaming body
@@ -373,15 +402,19 @@ def safe_fetch_url(
             return result
 
         except requests.exceptions.Timeout:
+            result["failure_category"] = "connection_timeout"
             result["error"] = f"Connection timed out after {timeout_seconds} seconds."
             return result
         except requests.exceptions.SSLError as ssl_err:
+            result["failure_category"] = "tls_error"
             result["error"] = f"TLS/SSL certificate error: {ssl_err}"
             return result
         except requests.exceptions.ConnectionError as conn_err:
+            result["failure_category"] = "connection_failed"
             result["error"] = f"Failed to connect to host '{hostname}': {conn_err}"
             return result
         except Exception as exc:
+            result["failure_category"] = "fetch_error"
             result["error"] = f"Unexpected fetch error: {exc}"
             return result
 
@@ -401,20 +434,24 @@ def analyze_url(url_str: str, fetch_content: bool = True) -> Dict[str, Any]:
             "success": False,
             "url": url_str,
             "error": syntax_res["error"],
+            "failure_category": "invalid_url",
             "analysis_mode": "syntax_only",
             "disclosure": "Validation failed on URL syntax.",
             "indicators": syntax_res["indicators"],
             "extracted_text": "",
             "title": "",
             "metadata": {},
+            "url_model": {"available": False, "error": "URL syntax validation failed."},
         }
 
     if not fetch_content:
+        url_model = _classify_url(url_str)
         return {
             "valid": True,
             "success": True,
             "url": url_str,
             "error": None,
+            "failure_category": None,
             "analysis_mode": "syntax_only",
             "disclosure": "URL structure and domain-only analysis (no remote connection made).",
             "indicators": syntax_res["indicators"],
@@ -424,10 +461,12 @@ def analyze_url(url_str: str, fetch_content: bool = True) -> Dict[str, Any]:
             "extracted_text": "",
             "title": "",
             "metadata": {"hostname": syntax_res["hostname"], "is_ip_literal": syntax_res["is_ip_literal"]},
+            "url_model": url_model,
         }
 
     # Fetch live content safely
     fetch_res = safe_fetch_url(url_str)
+    url_model = _classify_url(url_str)
 
     combined_indicators = list(dict.fromkeys(syntax_res["indicators"] + fetch_res.get("indicators", [])))
 
@@ -437,6 +476,7 @@ def analyze_url(url_str: str, fetch_content: bool = True) -> Dict[str, Any]:
         "final_url": fetch_res.get("final_url", url_str),
         "success": fetch_res["success"],
         "error": fetch_res.get("error"),
+        "failure_category": fetch_res.get("failure_category"),
         "analysis_mode": "live_fetch" if fetch_res["success"] else "fetch_failed",
         "disclosure": "Safely retrieved remote HTML content without code execution." if fetch_res["success"] else f"Live fetch failed: {fetch_res.get('error')}. Relying on domain syntax.",
         "indicators": combined_indicators,
@@ -454,4 +494,5 @@ def analyze_url(url_str: str, fetch_content: bool = True) -> Dict[str, Any]:
             "bytes": fetch_res.get("bytes_downloaded", 0),
             "redirects": len(fetch_res.get("redirect_history", [])),
         },
+        "url_model": url_model,
     }
