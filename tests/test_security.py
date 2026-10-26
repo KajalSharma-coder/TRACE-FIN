@@ -8,6 +8,8 @@ import io
 import os
 import sys
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -16,7 +18,7 @@ from config import DATASET_PATH, DB_PATH
 from src.url_fetcher import is_safe_ip, validate_url_syntax
 from src.csv_analyzer import sanitize_cell, export_safe_csv
 from src.ml_model import EXCLUDED_COLUMNS
-from src.database import record_count, get_all_records
+from src.database import get_all_records, init_db, insert_record, record_count, reset_engine, set_engine
 
 
 # ── 1. SSRF Attack Vector Verification ─────────────────────────────────
@@ -91,7 +93,30 @@ def test_security_zero_pii_feature_usage():
 
 # ── 4. Database Record Integrity Guarantee ─────────────────────────────
 
-def test_security_database_records_not_deleted():
-    """Ensure database records are not deleted or reset."""
+@pytest.fixture
+def isolated_security_db():
+    """Use an isolated in-memory database for record-integrity checks."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    set_engine(engine)
+    init_db(engine)
+    try:
+        yield
+    finally:
+        reset_engine()
+
+
+def test_security_database_records_not_deleted(isolated_security_db):
+    """Ensure read-only integrity checks do not delete or reset records."""
+    insert_record({"record_id": "TF-SEC-COUNT-1", "ad_text": "Synthetic integrity record one"})
+    insert_record({"record_id": "TF-SEC-COUNT-2", "ad_text": "Synthetic integrity record two"})
+
+    before = get_all_records()
     count = record_count()
-    assert count >= 38, f"Database record count dropped unexpectedly to {count}!"
+    after = get_all_records()
+
+    assert count == len(before) == len(after) == 2
+    assert [record["record_id"] for record in after] == [record["record_id"] for record in before]

@@ -262,7 +262,7 @@ def authenticated_app(tmp_path, monkeypatch):
     return at
 
 
-def test_real_page_analyze_advertisement_suspicious_flow(authenticated_app):
+def test_real_page_analyze_advertisement_suspicious_flow(authenticated_app, monkeypatch):
     """Verify that Analyze Advertisement page runs suspicious analysis without NameError or crash."""
     at = authenticated_app
     at.switch_page("pages/1_Analyze_Advertisement.py").run()
@@ -271,6 +271,16 @@ def test_real_page_analyze_advertisement_suspicious_flow(authenticated_app):
     suspicious_ad = (
         "Urgent financial opportunity: Rent your personal bank account for instant cashout service! "
         "Contact Telegram @fastcashout, phone 9876543210"
+    )
+    # Control the optional engine so this UI integration test exercises the
+    # configured two-model high-risk branch deterministically.
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_ml",
+        lambda _text: {"available": True, "risk_label": "High Risk", "confidence": 0.94},
+    )
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_hf",
+        lambda _text: {"available": True, "risk_label": "High Risk", "confidence": 0.95},
     )
     at.text_area(key="reviewed_ad_text").input(suspicious_ad).run()
     at.button(key="btn_analyze_reviewed").click().run()

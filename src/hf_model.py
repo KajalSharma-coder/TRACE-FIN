@@ -8,10 +8,12 @@ all heavy imports are guarded inside functions.
 """
 
 import json
+import hashlib
 import logging
 import os
 import re
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -30,6 +32,8 @@ HF_MODEL_VERSION = "distilbert-v1.0"
 HF_PREPROCESSING_VERSION = "ad-pii-normalization-v1"
 HF_TASK_DEFINITION = "binary legitimate vs suspicious financial advertisement classification"
 HF_MAX_LENGTH = 128
+MIN_INDEPENDENT_TEMPLATES = 10
+MIN_GROUPS_PER_SPLIT = 2
 
 # Label mapping — binary classification
 LABEL_MAP = {0: "Safe", 1: "High Risk"}
@@ -44,6 +48,48 @@ _CACHED_HF_MODEL = None
 _CACHED_HF_TOKENIZER = None
 _CACHED_HF_MODEL_DIR: Optional[Path] = None
 _CACHED_HF_DEVICE = None
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sha256_directory(path: Path, exclude_names: Optional[set[str]] = None) -> str:
+    """Hash an artifact directory deterministically without exposing its contents."""
+    digest = hashlib.sha256()
+    excluded = exclude_names or set()
+    for file_path in sorted(p for p in path.rglob("*") if p.is_file()):
+        if file_path.name in excluded:
+            continue
+        relative = file_path.relative_to(path).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(_sha256_file(file_path).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _load_local_hf_artifact(model_dir: Path, device: str):
+    """Load a complete local artifact and validate its classifier contract."""
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
+    model = AutoModelForSequenceClassification.from_pretrained(
+        str(model_dir), local_files_only=True
+    )
+    actual_id2label = {str(k): str(v) for k, v in model.config.id2label.items()}
+    if actual_id2label != {"0": "Safe", "1": "High Risk"}:
+        raise ValueError(f"Checkpoint label mapping mismatch: {actual_id2label}")
+    if int(model.config.num_labels) != len(LABEL_MAP):
+        raise ValueError(f"Checkpoint has {model.config.num_labels} classes; expected {len(LABEL_MAP)}")
+    model.to(torch.device(device))
+    model.eval()
+    return tokenizer, model
 
 
 def check_hf_dependencies() -> Dict[str, Any]:
@@ -178,10 +224,10 @@ def prepare_dataset(
     template_count = len(unique_templates)
 
     warnings = []
-    if template_count < 10:
+    if template_count < MIN_INDEPENDENT_TEMPLATES:
         warnings.append(
             f"Only {template_count} unique text templates detected. "
-            "Model generalization will be severely limited."
+            f"At least {MIN_INDEPENDENT_TEMPLATES} independent templates are required before training."
         )
     if len(df) < 100:
         warnings.append(f"Dataset has only {len(df)} samples. Results may not be reliable.")
@@ -277,6 +323,38 @@ def prepare_dataset(
         "test": {"Safe": test_labels.count(0), "High Risk": test_labels.count(1)},
     }
 
+    split_groups = {
+        "train": sorted(set(df_work.loc[train_mask, "fingerprint"])) if not used_row_split else [],
+        "val": sorted(set(df_work.loc[val_mask, "fingerprint"])) if not used_row_split else [],
+        "test": sorted(set(df_work.loc[test_mask, "fingerprint"])) if not used_row_split else [],
+    }
+    split_manifest = {
+        split: {
+            "group_hashes": [hashlib.sha256(group.encode("utf-8")).hexdigest() for group in groups],
+            "row_count": len(values),
+            "safe_count": values.count(0),
+            "high_risk_count": values.count(1),
+        }
+        for split, groups, values in (
+            ("train", split_groups["train"], train_labels),
+            ("val", split_groups["val"], val_labels),
+            ("test", split_groups["test"], test_labels),
+        )
+    }
+    split_manifest_hash = hashlib.sha256(
+        json.dumps(split_manifest, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    training_ready = (
+        template_count >= MIN_INDEPENDENT_TEMPLATES
+        and not used_row_split
+        and all(len(split_groups[name]) >= MIN_GROUPS_PER_SPLIT for name in ("train", "val", "test"))
+    )
+    if not training_ready:
+        warnings.append(
+            "Training is blocked until grouped partitions contain sufficient independent templates "
+            "and no row-split fallback is used."
+        )
+
     return {
         "train_texts": train_texts,
         "train_labels": train_labels,
@@ -287,14 +365,11 @@ def prepare_dataset(
         "label_map": LABEL_MAP,
         "class_distribution": class_dist,
         "template_count": template_count,
-        "template_groups": {
-            split_name: sorted(set(df_work.loc[
-                df_work["text"].isin(values), "fingerprint"
-            ]))
-            for split_name, values in (
-                ("train", train_texts), ("val", val_texts), ("test", test_texts)
-            )
-        },
+        "template_groups": split_groups,
+        "split_manifest": split_manifest,
+        "split_manifest_hash": split_manifest_hash,
+        "dataset_sha256": _sha256_file(dataset_path),
+        "training_ready": training_ready,
         "warnings": warnings,
     }
 
@@ -311,6 +386,9 @@ def train_distilbert(
     seed: int = 42,
     device: Optional[str] = None,
     progress_callback: Optional[Callable] = None,
+    dataset_metadata: Optional[Dict[str, Any]] = None,
+    test_texts: Optional[List[str]] = None,
+    test_labels: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """
     Fine-tune distilbert-base-uncased for binary classification.
@@ -325,6 +403,18 @@ def train_distilbert(
     Returns:
         dict with success, model_dir, epochs_completed, losses, accuracy, error
     """
+    if dataset_metadata is not None and not dataset_metadata.get("training_ready", False):
+        return {
+            "success": False,
+            "model_dir": None,
+            "epochs_completed": 0,
+            "final_train_loss": None,
+            "final_val_loss": None,
+            "val_accuracy": None,
+            "error": "Training blocked: insufficient independent grouped templates or invalid split manifest.",
+        }
+
+    candidate_dir: Optional[Path] = None
     try:
         import torch
         from torch.utils.data import DataLoader, TensorDataset
@@ -437,22 +527,17 @@ def train_distilbert(
             if progress_callback:
                 progress_callback(epoch + 1, epochs, avg_train_loss, avg_val_loss)
 
-        # Backup existing model dir
-        if HF_MODEL_DIR.exists():
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            backup_dir = HF_MODEL_DIR.parent / f"hf_financial_ad_classifier_backup_{ts}"
-            try:
-                shutil.move(str(HF_MODEL_DIR), str(backup_dir))
-                logger.info("Backed up previous model to: %s", backup_dir)
-            except Exception as bk_err:
-                logger.warning("Could not backup previous model: %s", bk_err)
+        # Save to an isolated candidate. The active checkpoint is untouched
+        # until the candidate has reloaded and passed evaluation.
+        candidate_dir = Path(tempfile.mkdtemp(
+            prefix="hf_financial_ad_classifier_candidate_",
+            dir=str(HF_MODEL_DIR.parent),
+        ))
+        model.save_pretrained(str(candidate_dir))
+        tokenizer.save_pretrained(str(candidate_dir))
+        checkpoint_sha256 = _sha256_directory(candidate_dir, {"metadata.json"})
 
-        # Save model and tokenizer
-        HF_MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(str(HF_MODEL_DIR))
-        tokenizer.save_pretrained(str(HF_MODEL_DIR))
-
-        # Save metadata
+        # Write preliminary metadata into the candidate only.
         metadata = {
             "base_model": HF_BASE_MODEL,
             "model_version": HF_MODEL_VERSION,
@@ -477,12 +562,51 @@ def train_distilbert(
                 "final_val_loss": round(final_val_loss, 6),
                 "val_accuracy": round(val_accuracy, 6),
             },
+            "dataset_sha256": dataset_metadata.get("dataset_sha256") if dataset_metadata else None,
+            "split_manifest_hash": dataset_metadata.get("split_manifest_hash") if dataset_metadata else None,
+            "checkpoint_sha256": checkpoint_sha256,
+            "artifact_status": "candidate_unverified",
             "trained_at": datetime.now(timezone.utc).isoformat(),
         }
-        with open(HF_METADATA_PATH, "w", encoding="utf-8") as f:
+        candidate_metadata_path = candidate_dir / "metadata.json"
+        with open(candidate_metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
-        logger.info("Saved fine-tuned model to: %s", HF_MODEL_DIR)
+        # Reload the exact candidate and run the held-out evaluation against it.
+        candidate_device = "cuda" if device == "cuda" else "cpu"
+        _load_local_hf_artifact(candidate_dir, candidate_device)
+        eval_result = evaluate_distilbert(
+            test_texts=test_texts or [],
+            test_labels=test_labels or [],
+            device=candidate_device,
+            model_dir=candidate_dir,
+            metadata_path=candidate_metadata_path,
+        )
+        # An empty evaluation is not a valid promotion gate.
+        if eval_result.get("error") or eval_result.get("test_count", 0) == 0:
+            raise RuntimeError(eval_result.get("error") or "Checkpoint evaluation produced no test rows.")
+
+        metadata["evaluation_metrics"] = eval_result
+        metadata["evaluation_used_saved_checkpoint"] = True
+        metadata["artifact_status"] = "verified_candidate"
+        with open(candidate_metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
+
+        # Promote only after all candidate validation has passed.
+        backup_dir = None
+        if HF_MODEL_DIR.exists():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            backup_dir = HF_MODEL_DIR.parent / f"hf_financial_ad_classifier_backup_{ts}"
+            shutil.move(str(HF_MODEL_DIR), str(backup_dir))
+        try:
+            shutil.move(str(candidate_dir), str(HF_MODEL_DIR))
+            candidate_dir = None
+        except Exception:
+            if backup_dir and backup_dir.exists() and not HF_MODEL_DIR.exists():
+                shutil.move(str(backup_dir), str(HF_MODEL_DIR))
+            raise
+
+        logger.info("Promoted verified fine-tuned model to: %s", HF_MODEL_DIR)
 
         return {
             "success": True,
@@ -491,10 +615,22 @@ def train_distilbert(
             "final_train_loss": round(final_train_loss, 6),
             "final_val_loss": round(final_val_loss, 6),
             "val_accuracy": round(val_accuracy, 6),
+            "evaluation_metrics": eval_result,
+            "checkpoint_sha256": checkpoint_sha256,
             "error": None,
         }
 
+    except KeyboardInterrupt:
+        if candidate_dir and candidate_dir.exists():
+            shutil.rmtree(candidate_dir, ignore_errors=True)
+        return {
+            "success": False, "model_dir": None, "epochs_completed": 0,
+            "final_train_loss": None, "final_val_loss": None, "val_accuracy": None,
+            "error": "Training interrupted; active checkpoint was left unchanged.",
+        }
     except RuntimeError as exc:
+        if candidate_dir and candidate_dir.exists():
+            shutil.rmtree(candidate_dir, ignore_errors=True)
         if "out of memory" in str(exc).lower():
             return {
                 "success": False,
@@ -515,6 +651,8 @@ def train_distilbert(
             "error": f"Training error: {exc}",
         }
     except Exception as exc:
+        if candidate_dir and candidate_dir.exists():
+            shutil.rmtree(candidate_dir, ignore_errors=True)
         return {
             "success": False,
             "model_dir": None,
@@ -530,6 +668,8 @@ def evaluate_distilbert(
     test_texts: List[str],
     test_labels: List[int],
     device: Optional[str] = None,
+    model_dir: Optional[Path] = None,
+    metadata_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Evaluate a fine-tuned DistilBERT model on a test set.
@@ -548,16 +688,17 @@ def evaluate_distilbert(
     except ImportError as exc:
         return {"error": f"Missing dependencies: {exc}"}
 
-    if not HF_MODEL_DIR.exists():
-        return {"error": f"No trained model found at {HF_MODEL_DIR}"}
+    evaluation_dir = model_dir or HF_MODEL_DIR
+    evaluation_metadata_path = metadata_path or (evaluation_dir / "metadata.json")
+    if not evaluation_dir.exists():
+        return {"error": "DistilBERT checkpoint directory is missing."}
 
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     dev = torch.device(device)
 
     try:
-        tokenizer = AutoTokenizer.from_pretrained(str(HF_MODEL_DIR))
-        model = AutoModelForSequenceClassification.from_pretrained(str(HF_MODEL_DIR))
+        tokenizer, model = _load_local_hf_artifact(evaluation_dir, device or "cpu")
         model.to(dev)
         model.eval()
 
@@ -610,20 +751,20 @@ def evaluate_distilbert(
             },
             "test_count": len(test_labels),
             "model_version": HF_MODEL_VERSION,
+            "checkpoint_sha256": _sha256_directory(evaluation_dir, {"metadata.json"}),
+            "evaluation_used_saved_checkpoint": True,
             "error": None,
         }
 
         # Update metadata with evaluation results
-        if HF_METADATA_PATH.exists():
-            try:
-                with open(HF_METADATA_PATH, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                meta["evaluation_metrics"] = result
-                meta["evaluated_at"] = datetime.now(timezone.utc).isoformat()
-                with open(HF_METADATA_PATH, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, indent=2)
-            except Exception:
-                pass
+        if evaluation_metadata_path.exists():
+            with open(evaluation_metadata_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            meta["evaluation_metrics"] = result
+            meta["evaluated_at"] = datetime.now(timezone.utc).isoformat()
+            meta["evaluation_used_saved_checkpoint"] = True
+            with open(evaluation_metadata_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
 
         return result
 
@@ -673,16 +814,21 @@ def predict_ad_hf(text: str) -> Dict[str, Any]:
         base_result["error"] = f"Missing dependencies: {exc}"
         return base_result
 
-    if not HF_MODEL_DIR.exists():
-        base_result["error"] = "DistilBERT model not found. Train the model first."
+    status = get_hf_model_status()
+    if not status.get("available"):
+        # Keep ordinary responses actionable but free of local paths or raw
+        # loader tracebacks. Detailed exception context remains in logs.
+        base_result["error"] = status.get("error") or "DistilBERT checkpoint is not ready for local inference."
         return base_result
 
     try:
         # Load or use cached model
         if _CACHED_HF_MODEL is None or _CACHED_HF_MODEL_DIR != HF_MODEL_DIR:
-            _CACHED_HF_TOKENIZER = AutoTokenizer.from_pretrained(str(HF_MODEL_DIR))
+            _CACHED_HF_TOKENIZER = AutoTokenizer.from_pretrained(
+                str(HF_MODEL_DIR), local_files_only=True
+            )
             _CACHED_HF_MODEL = AutoModelForSequenceClassification.from_pretrained(
-                str(HF_MODEL_DIR)
+                str(HF_MODEL_DIR), local_files_only=True
             )
             actual_id2label = {
                 str(k): str(v) for k, v in _CACHED_HF_MODEL.config.id2label.items()
@@ -735,7 +881,8 @@ def predict_ad_hf(text: str) -> Dict[str, Any]:
         return base_result
 
     except Exception as exc:
-        base_result["error"] = f"Inference error: {exc}"
+        logger.error("DistilBERT local inference failed: %s", type(exc).__name__)
+        base_result["error"] = "DistilBERT inference failed while loading or executing the local checkpoint."
         return base_result
 
 
@@ -753,6 +900,7 @@ def get_hf_model_info() -> Optional[Dict[str, Any]]:
 
 def get_hf_model_status() -> Dict[str, Any]:
     """Report checkpoint readiness and training evidence without running inference."""
+    global _CACHED_HF_MODEL, _CACHED_HF_TOKENIZER, _CACHED_HF_MODEL_DIR, _CACHED_HF_DEVICE
     metadata = get_hf_model_info() or {}
     config_path = HF_MODEL_DIR / "config.json"
     config_data: Dict[str, Any] = {}
@@ -787,18 +935,47 @@ def get_hf_model_status() -> Dict[str, Any]:
     )
     loaded = _CACHED_HF_MODEL is not None and _CACHED_HF_MODEL_DIR == HF_MODEL_DIR
     artifact_complete = config_path.is_file() and has_weights and has_tokenizer and label_mapping_valid
-    available = artifact_complete and deps_available
+    load_error = None
+    checkpoint_sha256 = _sha256_directory(HF_MODEL_DIR, {"metadata.json"}) if artifact_complete else None
+    if artifact_complete and deps_available and not loaded:
+        try:
+            device = "cuda" if __import__("torch").cuda.is_available() else "cpu"
+            tokenizer, model = _load_local_hf_artifact(HF_MODEL_DIR, device)
+            _CACHED_HF_TOKENIZER = tokenizer
+            _CACHED_HF_MODEL = model
+            _CACHED_HF_MODEL_DIR = HF_MODEL_DIR
+            _CACHED_HF_DEVICE = device
+            loaded = True
+        except Exception as exc:
+            logger.error("DistilBERT checkpoint validation failed: %s", type(exc).__name__)
+            load_error = "DistilBERT checkpoint could not be loaded for validation."
+    available = artifact_complete and deps_available and trained_for_scam_ads and loaded and not load_error
+    metrics_verified = bool(
+        checkpoint_sha256
+        and metadata.get("checkpoint_sha256") == checkpoint_sha256
+        and metadata.get("evaluation_used_saved_checkpoint") is True
+    )
 
     if loaded and has_training_record and trained_for_scam_ads:
         status = "loaded · scam-ad fine-tuned"
     elif loaded and has_training_record:
         status = "loaded · fine-tuning task unverified"
     elif loaded:
-        status = "loaded · fine-tuning unverified"
-    elif not artifact_complete:
-        status = "unavailable"
+        status = "untrained base model or training provenance missing"
+    elif load_error:
+        status = "checkpoint load failure"
+    elif not config_path.is_file():
+        status = "configuration missing"
+    elif not has_weights:
+        status = "checkpoint missing"
+    elif not has_tokenizer:
+        status = "tokenizer missing"
+    elif not label_mapping_valid:
+        status = "configuration invalid"
     elif not deps_available:
         status = "dependencies missing"
+    elif not trained_for_scam_ads:
+        status = "fine-tuning task unverified"
     elif has_training_record and trained_for_scam_ads:
         status = "fine-tuned for scam-ad classification"
     elif has_training_record:
@@ -815,6 +992,10 @@ def get_hf_model_status() -> Dict[str, Any]:
         errors.append("checkpoint labels do not match Safe=0 / High Risk=1")
     if not deps_available:
         errors.append("torch and transformers are required for inference")
+    if load_error:
+        errors.append(load_error)
+    if artifact_complete and not trained_for_scam_ads:
+        errors.append("training metadata does not verify the financial-ad classification task")
     if artifact_complete and not has_training_record:
         errors.append("training metadata is missing; fine-tuning status cannot be verified")
 
@@ -829,5 +1010,19 @@ def get_hf_model_status() -> Dict[str, Any]:
         "base_model": metadata.get("base_model"),
         "trained_at": metadata.get("trained_at"),
         "label_mapping_valid": label_mapping_valid,
+        "checkpoint_sha256": checkpoint_sha256,
+        "metrics_verified": metrics_verified,
+        "metrics_status": "verified" if metrics_verified else "historical or unverified",
+        "reason_code": (
+            "checkpoint_load_failure" if load_error else
+            "configuration_missing" if not config_path.is_file() else
+            "checkpoint_missing" if not has_weights else
+            "tokenizer_missing" if not has_tokenizer else
+            "configuration_invalid" if not label_mapping_valid else
+            "dependencies_missing" if not deps_available else
+            "task_unverified" if has_training_record and not trained_for_scam_ads else
+            "untrained_base_or_unverified" if not has_training_record else
+            None
+        ),
         "error": "; ".join(errors) if errors else None,
     }

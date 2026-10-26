@@ -8,6 +8,7 @@ Deterministic, explainable, rule-based analyzer for suspicious financial adverti
 """
 
 import re
+import unicodedata
 from typing import Any
 
 
@@ -28,6 +29,14 @@ STANDARD_DISCLAIMER = (
     "Automated preliminary indicators for investigator triage; not definitive proof of illegal activity. "
     "All flagged content requires verified human review and context evaluation."
 )
+
+
+def _normalize_for_matching(text: str) -> str:
+    """Normalize OCR whitespace and Unicode variants without removing words."""
+    normalized = unicodedata.normalize("NFKC", text)
+    normalized = normalized.replace("\u00a0", " ")
+    normalized = re.sub(r"[\u2010-\u2015\u2212]", "-", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 # ── Indicator Extraction Patterns ─────────────────────────────────────
@@ -160,12 +169,30 @@ _PATTERNS_ACCOUNT_RENTAL = [
         "Request to allow third parties to use a personal financial account",
     ),
     (
+        re.compile(
+            r"\b(?:use|using|provide|providing)\s+(?:your|a|the|personal)\s+"
+            r"(?:personal\s+)?(?:bank|current|savings|payment)\s+accounts?\b"
+            r"[^.!?]{0,100}\b(?:receive|accept|forward|transfer|send)\b",
+            re.I,
+        ),
+        "Instruction to use a personal bank account to receive or forward payments",
+    ),
+    (
         re.compile(r"\b(bank\s+account\s+rental|rent\s+your\s+account)\b", re.I),
         "Direct mention of bank account rental arrangements",
     ),
     (
         re.compile(r"\b(receive|accept|hold)\s+(payments?|money|funds?|transfers?)\b[^\n.!?]{0,60}\b(on\s+our\s+behalf|for\s+us|and\s+(transfer|forward|send)\s+it\s+back|and\s+keep\s+(a\s+)?commission)\b", re.I),
         "Money mule recruitment: request to receive funds and forward with commission",
+    ),
+    (
+        re.compile(
+            r"\b(?:receive|accept|forward|transfer|send)\s+(?:incoming\s+)?"
+            r"(?:payments?|money|funds?|transfers?)\b[^.!?]{0,70}"
+            r"\b(?:forward|transfer|send|to\s+other\s+accounts?)\b",
+            re.I,
+        ),
+        "Instruction to receive and forward incoming payments to other accounts",
     ),
     (
         re.compile(r"\b(transfer|forward|send)\s+(money|funds?)\b[^\n.!?]{0,50}\b(and\s+earn\s+(a\s+)?commission|keep\s+\d+%\s+commission)\b", re.I),
@@ -215,7 +242,7 @@ _PATTERNS_SUSPICIOUS_SOLICITATION = [
         "Account-block threat paired with an urgent verification or link action",
     ),
     (
-        re.compile(r"\b(share|send|provide|give|enter|submit|type|forward|tell|disclose|ask(?:ing)?\s+for)\b[^\n.!?]{0,40}\b(your\s+)?(otp|one[\s\-]?time\s+passwords?|verification\s+codes?|mpin|upi\s+pins?|atm\s+pins?|cvv\d?|netbanking\s+(?:login\s+)?passwords?|banking\s+(?:login\s+)?passwords?|login\s+credentials?|banking\s+credentials?|internet\s+banking\s+passwords?)\b", re.I),
+        re.compile(r"\b(share|send|provide|give|enter|submit|type|forward|tell|disclose|request(?:s|ed|ing)?|ask(?:s|ed|ing)?\s+for)\b[^\n.!?]{0,70}\b(your\s+)?(otp|one[\s\-]?time\s+passwords?|verification\s+codes?|mpin|upi\s+pins?|atm\s+pins?|cvv\d?|netbanking\s+(?:login\s+)?passwords?|banking\s+(?:login\s+)?passwords?|login\s+credentials?|banking\s+credentials?|internet\s+banking\s+passwords?)\b", re.I),
         "Direct request or harvesting of sensitive banking secrets (OTP, PIN, CVV, or password)",
     ),
     (
@@ -225,6 +252,22 @@ _PATTERNS_SUSPICIOUS_SOLICITATION = [
     (
         re.compile(r"\b(transfer|pay)\s+money\s+to\s+unlock\s+(your\s+)?(funds?|loan|prize|account)\b", re.I),
         "Conditional demand to transfer money to unlock promised funds or prizes",
+    ),
+    (
+        re.compile(
+            r"(?:(?:guaranteed|instant|limited)\b[^.!?]{0,100}"
+            r"\b(?:activation|registration|joining|processing)\s+"
+            r"(?:bonus\s*/\s*)?(?:fee|charge)\b|"
+            r"\b(?:activation|registration|joining|processing)\s+"
+            r"(?:bonus\s*/\s*)?(?:fee|charge)\b[^.!?]{0,100}"
+            r"\b(?:guaranteed|earnings?|income|account|transfer|receive)\b)",
+            re.I,
+        ),
+        "Activation or registration fee linked to guaranteed earnings or account transfers",
+    ),
+    (
+        re.compile(r"\b(?:activation|registration|joining|processing)\s+(?:bonus\s*/\s*)?(?:fee|charge)\b", re.I),
+        "Activation or registration fee requested in a financial solicitation",
     ),
     (
         re.compile(r"\b(contact|dm|message|inbox|telegram|whatsapp|signal|wickr|jabber)\b[^\n.!?]{0,50}\b(to\s+(buy|purchase|order|get\s+accounts?|get\s+cards?)|for\s+rates|for\s+pricing)\b", re.I),
@@ -243,11 +286,29 @@ _PATTERNS_SUSPICIOUS_SOLICITATION = [
 # Category E: Urgency, Secrecy, and Unrealistic Promises
 _PATTERNS_URGENCY_SECRECY = [
     (
-        re.compile(r"\b(don'?t\s+tell|do\s+not\s+inform|keep\s+(this\s+)?secret|keep\s+confidential|off\s+the\s+books|untraceable|100%\s+anonymous)\b", re.I),
+        re.compile(r"\b(don'?t\s+tell|do\s+not\s+inform|avoid\s+(?:contacting|informing)\s+(?:the\s+)?bank|keep\s+(this\s+)?secret|keep\s+confidential|off\s+the\s+books|untraceable|100%\s+anonymous)\b", re.I),
         "Secrecy, non-disclosure, or evasion instructions",
     ),
     (
-        re.compile(r"\b(guaranteed|earn|make)\s+(\$|₹|rs\.?|usd)?\s*\d+[\d,]*\s*(daily|per\s+day|weekly|hourly)\b[^\n.!?]{0,50}\b(with\s+(your|no)\s+(effort|work|investment|account))\b", re.I),
+        re.compile(
+            r"\bguaranteed\s+(?:earnings?|income)\s+(?:of\s+)?"
+            r"(?:₹|rs\.?|usd|\$)?\s*\d+[\d,]*(?:\s*[-–—]\s*"
+            r"(?:₹|rs\.?|usd|\$)?\s*\d+[\d,]*)?\s*"
+            r"(?:daily|per\s+day|weekly|monthly|per\s+month|hourly)\b",
+            re.I,
+        ),
+        "Guaranteed earnings or income promise with a monetary amount",
+    ),
+    (
+        re.compile(
+            r"\b(?:guaranteed\s+)?(?:earnings?|income|earn|make)\s+(?:of\s+)?"
+            r"(?:₹|rs\.?|usd|\$)?\s*\d+[\d,]*(?:\s*[-–—]\s*"
+            r"(?:₹|rs\.?|usd|\$)?\s*\d+[\d,]*)?\s*"
+            r"(?:daily|per\s+day|weekly|monthly|per\s+month|hourly)\b"
+            r"[^.!?]{0,80}\b(?:with\s+(?:your|no)\s+(?:effort|work|investment|account)|"
+            r"guaranteed|personal\s+account|limited\s+seats?)\b",
+            re.I,
+        ),
         "Unrealistic guaranteed earnings promised with minimal effort or account access",
     ),
     (
@@ -255,7 +316,7 @@ _PATTERNS_URGENCY_SECRECY = [
         "Extravagant guarantee of '100% risk-free' financial returns",
     ),
     (
-        re.compile(r"\b(only\s+\d+\s+(left|accounts?\s+remaining|slots?)|hurry\s+up|act\s+fast|urgent\s+deal|last\s+chance|immediate\s+action\s+required|(?:click|claim|verify|respond)\s+(?:now|immediately|today)|limited[- ]time\s+(?:offer|reward|claim))\b", re.I),
+        re.compile(r"\b(only\s+\d+\s+(left|accounts?\s+remaining|slots?)|limited\s+seats?|hurry\s+up|act\s+fast|urgent\s+deal|last\s+chance|immediate\s+action\s+required|(?:click|claim|verify|respond)\s+(?:now|immediately|today)|limited[- ]time\s+(?:offer|reward|claim))\b", re.I),
         "High urgency or artificial scarcity pressure tactics",
     ),
 ]
@@ -415,6 +476,10 @@ def analyze_ad(text: str) -> dict[str, Any]:
             "legitimate_transactional_otp": False,
         }
 
+    # OCR engines can emit compatibility Unicode forms, non-breaking spaces,
+    # line breaks, and typographic dashes. Normalize only for matching so
+    # equivalent visual text follows the same explainable rules.
+    text = _normalize_for_matching(text)
     matched_categories: list[str] = []
     matched_rules: list[dict[str, Any]] = []
     evidence: list[str] = []
@@ -480,6 +545,13 @@ def analyze_ad(text: str) -> dict[str, Any]:
     # 4. Evaluate Category D: Suspicious financial solicitation (Weight: 20)
     solicitation_matched = False
     for pattern, desc in _PATTERNS_SUSPICIOUS_SOLICITATION:
+        if (
+            desc == "Activation or registration fee requested in a financial solicitation"
+            and not re.search(r"\b(?:account|transfer|receive|earnings?|guaranteed|otp|limited)\b", text, re.I)
+        ):
+            # An activation fee by itself can be legitimate; require adjacent
+            # financial-solicitation context before treating it as a signal.
+            continue
         m = pattern.search(text)
         if m:
             solicitation_matched = True
@@ -491,7 +563,6 @@ def analyze_ad(text: str) -> dict[str, Any]:
                 "evidence": snippet,
                 "weight": 20,
             })
-            break
     if solicitation_matched:
         matched_categories.append(CAT_SUSPICIOUS_SOLICITATION)
         raw_score += 20
@@ -510,7 +581,6 @@ def analyze_ad(text: str) -> dict[str, Any]:
                 "evidence": snippet,
                 "weight": 10,
             })
-            break
     if urgency_matched:
         matched_categories.append(CAT_URGENCY_SECRECY)
         raw_score += 10
@@ -589,6 +659,7 @@ def analyze_ad(text: str) -> dict[str, Any]:
             raw_score += 2
 
     # ── State clearly if no rules matched ─────────────────────────────────
+    evidence = list(dict.fromkeys(evidence))
     if not evidence:
         evidence = ["No configured rules matched."]
 
@@ -725,10 +796,13 @@ def compute_unified_verdict(
     # 3. Rule indicators with partial model confirmation: never downgrade to LOW RISK.
     # A rule score >=25 means a configured threat pattern matched. If only one
     # model is high (or the score is below the high-risk consensus threshold),
-    # preserve a MEDIUM RISK result and require human review.
+    # preserve a MEDIUM RISK result and require human review. The score remains
+    # the explainable heuristic score: model availability/alerts affect the
+    # verdict and workflow, but must not replace the measured rule evidence with
+    # an arbitrary fallback such as 40.
     elif has_rule_threat and models_high >= 1:
         final_verdict = "MEDIUM RISK"
-        final_score = max(40, rule_score)
+        final_score = rule_score
         badge_color = "#eab308"
         consensus_status = "Rule Indicators + Model Alert (Manual Review Required)"
         model_names = []

@@ -69,9 +69,14 @@ def isolated_db(tmp_path, monkeypatch):
     test_db_path = tmp_path / "test_tracefin.db"
     monkeypatch.setattr(db_module, "DB_PATH", test_db_path)
     db_module.init_db()
-    yield test_db_path
-    if test_db_path.exists():
-        test_db_path.unlink()
+    try:
+        yield test_db_path
+    finally:
+        # The application database layer owns a process-wide SQLAlchemy engine.
+        # Dispose it before Windows attempts to remove the temporary SQLite file.
+        db_module.reset_engine()
+        if test_db_path.exists():
+            test_db_path.unlink()
 
 
 class MockUploadedFile:
@@ -112,6 +117,9 @@ def test_direct_text_suspicious_benchmark(isolated_db):
     assert res["has_sufficient_evidence"] is True
     assert res["final_verdict"] == "HIGH RISK"
     assert res["final_score"] >= 75
+    assert res["analyzed_text"] == BENCHMARK_SUSPICIOUS_TEXT
+    assert res["evidence"]
+    assert any("bank account" in item.lower() for item in res["evidence"])
     assert res["rule_score"] >= 50
     assert len(res["matched_rules"]) >= 2
     assert "9876543210" in res["phone_numbers"]
@@ -381,6 +389,33 @@ def test_pdf_upload_suspicious_benchmark(mock_pdf, isolated_db):
     saved = db_module.get_record(rec_id)
     assert saved["analysis_mode"] == "pdf_document_unified"
     assert saved["risk_level"] in ("High", "Critical")
+
+
+def test_pdf_suspicious_text_reaches_rules_with_models_unavailable(monkeypatch):
+    """A successful PDF text handoff must preserve rule evidence without model fallback scoring."""
+    suspicious_text = (
+        "Guaranteed ₹10,000 monthly earnings. Renting a bank account for transfers. "
+        "Send bank login credentials and OTP. Pay a ₹1,499 advance activation fee. "
+        "Forward incoming transfers and avoid contacting the bank."
+    )
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_ml",
+        lambda _text: {"available": False, "risk_label": None, "confidence": None},
+    )
+    monkeypatch.setattr(
+        "src.analysis_service.predict_ad_hf",
+        lambda _text: {"available": False, "risk_label": None, "confidence": None},
+    )
+
+    result = run_unified_analysis(suspicious_text, source_type="PDF Document")
+
+    assert result["analyzed_text"] == suspicious_text
+    assert result["final_score"] > 0
+    assert result["rule_score"] > 0
+    assert result["final_verdict"] in {"MEDIUM RISK", "HIGH RISK"}
+    assert result["matched_categories"]
+    assert result["evidence"]
+    assert result["engine_status"]["distilbert"] == "unavailable"
 
 
 @patch("src.document_extractor.extract_pdf_text")

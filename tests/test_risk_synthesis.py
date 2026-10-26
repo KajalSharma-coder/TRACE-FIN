@@ -205,6 +205,30 @@ def test_rule_evidence_and_model_disagreement_cannot_be_hidden_by_awareness_miti
     assert verdict["review_required"] is True
 
 
+def test_partial_model_confirmation_preserves_measured_rule_score():
+    """A single model alert must not replace a 25-49 rule score with a fixed 40."""
+    rule_res = {
+        "risk_score": 35,
+        "risk_level": "Medium",
+        "matched_categories": ["Account Rental & Mule Recruitment"],
+        "matched_rules": [{"rule_name": "Account rental", "evidence": "rent your account"}],
+    }
+    ml_res = {
+        "available": True,
+        "risk_label": "High Risk",
+        "confidence": 0.84,
+        "high_risk_score": 0.84,
+    }
+    hf_res = {"available": False, "risk_label": None, "confidence": None}
+
+    verdict = compute_unified_verdict(rule_res, ml_res, hf_res)
+
+    assert verdict["final_verdict"] == "MEDIUM RISK"
+    assert verdict["final_score"] == 35
+    assert verdict["final_score"] == verdict["rule_score"]
+    assert verdict["review_required"] is True
+
+
 # ── 3. Repeated Indicators and Score Bounds ─────────────────────────────
 
 def test_repeated_indicators_bounded():

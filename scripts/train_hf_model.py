@@ -100,6 +100,10 @@ def main():
         for w in data["warnings"]:
             print(f"   • {w}")
 
+    if not data.get("training_ready"):
+        print("\nTraining blocked: grouped dataset safeguards are not satisfied.")
+        sys.exit(1)
+
     # 3. Model Training
     print(f"\n[3/5] Starting fine-tuning with base model: '{HF_BASE_MODEL}'...")
     print(f"      • Epochs: {args.epochs} | Batch size: {args.batch_size} | LR: {args.lr} | Max len: {args.max_length}")
@@ -119,6 +123,9 @@ def main():
         seed=args.seed,
         device=args.device,
         progress_callback=progress_callback,
+        dataset_metadata=data,
+        test_texts=data["test_texts"],
+        test_labels=data["test_labels"],
     )
 
     if not train_res["success"]:
@@ -129,7 +136,7 @@ def main():
     print(f"  {train_res['model_dir']}")
     print(f"  Final Validation Accuracy: {train_res['val_accuracy']*100:.2f}%")
 
-    # 4. Evaluation on held-out test split
+    # 4. Re-check the exact promoted checkpoint. Failure is fatal.
     print(f"\n[4/5] Evaluating fine-tuned model on held-out test partition ({len(data['test_texts'])} samples)...")
     eval_res = evaluate_distilbert(
         test_texts=data["test_texts"],
@@ -138,7 +145,7 @@ def main():
     )
 
     if eval_res.get("error"):
-        print(f"⚠️ Evaluation warning: {eval_res['error']}")
+        sys.exit(1)
     else:
         print(f"      • Test Accuracy:     {eval_res['accuracy']*100:.2f}%")
         print(f"      • Macro F1-Score:    {eval_res['macro_f1']:.4f}")

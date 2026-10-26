@@ -133,7 +133,7 @@ def test_hf_model_status_reports_artifact_and_training_evidence():
         assert status["base_model"]
         assert status["trained_at"]
     if status["trained"] and not status.get("trained_for_scam_ads"):
-        assert "unverified" in status["status"].lower()
+        assert any(term in status["status"].lower() for term in ("unverified", "missing"))
 
 
 def test_hf_model_status_rejects_mismatched_label_mapping(tmp_path, monkeypatch):
@@ -155,6 +155,143 @@ def test_hf_model_status_rejects_mismatched_label_mapping(tmp_path, monkeypatch)
     assert status["available"] is False
     assert status["label_mapping_valid"] is False
     assert "label" in status["error"].lower()
+
+
+def test_hf_model_status_distinguishes_missing_checkpoint(tmp_path, monkeypatch):
+    import json
+    import src.hf_model as hf_module
+
+    model_dir = tmp_path / "missing-weights-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"id2label": {"0": "Safe", "1": "High Risk"}}),
+        encoding="utf-8",
+    )
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model_dir / "metadata.json").write_text(
+        json.dumps({"task_definition": "binary legitimate vs suspicious financial advertisement classification"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hf_module, "HF_MODEL_DIR", model_dir)
+    monkeypatch.setattr(hf_module, "HF_METADATA_PATH", model_dir / "metadata.json")
+
+    status = get_hf_model_status()
+
+    assert status["available"] is False
+    assert status["reason_code"] == "checkpoint_missing"
+    assert status["status"] == "checkpoint missing"
+    assert "model weight file is missing" in status["error"]
+
+
+def test_hf_model_status_distinguishes_corrupt_checkpoint(tmp_path, monkeypatch):
+    import json
+    import src.hf_model as hf_module
+
+    model_dir = tmp_path / "corrupt-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({"id2label": {"0": "Safe", "1": "High Risk"}, "num_labels": 2}),
+        encoding="utf-8",
+    )
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"not-a-real-checkpoint")
+    (model_dir / "metadata.json").write_text(
+        json.dumps({
+            "base_model": hf_module.HF_BASE_MODEL,
+            "task_definition": hf_module.HF_TASK_DEFINITION,
+            "trained_at": "2026-01-01T00:00:00+00:00",
+            "training_config": {},
+            "training_results": {},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hf_module, "HF_MODEL_DIR", model_dir)
+    monkeypatch.setattr(hf_module, "HF_METADATA_PATH", model_dir / "metadata.json")
+    monkeypatch.setattr(hf_module, "_CACHED_HF_MODEL", None)
+    monkeypatch.setattr(hf_module, "_CACHED_HF_TOKENIZER", None)
+    monkeypatch.setattr(hf_module, "_CACHED_HF_MODEL_DIR", None)
+    monkeypatch.setattr(hf_module, "_CACHED_HF_DEVICE", None)
+
+    status = get_hf_model_status()
+
+    assert status["available"] is False
+    assert status["reason_code"] == "checkpoint_load_failure"
+    assert status["status"] == "checkpoint load failure"
+
+
+def test_prepare_dataset_blocks_training_when_template_diversity_is_low():
+    data = prepare_dataset(DATASET_PATH)
+    assert data["training_ready"] is False
+    assert data["template_count"] < 10
+    assert data["split_manifest_hash"]
+
+    import src.hf_model as hf_module
+    result = hf_module.train_distilbert(
+        train_texts=["safe"], train_labels=[0],
+        val_texts=["high risk"], val_labels=[1],
+        dataset_metadata=data,
+    )
+    assert result["success"] is False
+    assert "blocked" in result["error"].lower()
+
+
+def test_predict_ad_hf_loads_controlled_local_cpu_fixture(tmp_path, monkeypatch):
+    """Exercise real local loading without downloading or using project weights."""
+    import json
+    import shutil
+    import src.hf_model as hf_module
+
+    torch = pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    model_dir = tmp_path / "local-fixture"
+    model_dir.mkdir()
+    config = transformers.DistilBertConfig(
+        vocab_size=30522,
+        dim=32,
+        hidden_dim=64,
+        n_layers=1,
+        n_heads=4,
+        max_position_embeddings=128,
+        num_labels=2,
+        id2label={"0": "Safe", "1": "High Risk"},
+        label2id={"Safe": 0, "High Risk": 1},
+    )
+    model = transformers.DistilBertForSequenceClassification(config)
+    model.save_pretrained(model_dir)
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        shutil.copy2(hf_module.HF_MODEL_DIR / name, model_dir / name)
+    (model_dir / "metadata.json").write_text(
+        json.dumps({
+            "base_model": hf_module.HF_BASE_MODEL,
+            "model_version": "fixture",
+            "task_definition": hf_module.HF_TASK_DEFINITION,
+            "trained_at": "2026-01-01T00:00:00+00:00",
+            "training_config": {"device": "cpu"},
+            "training_results": {"epochs_completed": 1},
+        }),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(hf_module, "HF_MODEL_DIR", model_dir)
+    monkeypatch.setattr(hf_module, "HF_METADATA_PATH", model_dir / "metadata.json")
+    monkeypatch.setattr(hf_module, "_CACHED_HF_MODEL", None)
+    monkeypatch.setattr(hf_module, "_CACHED_HF_TOKENIZER", None)
+    monkeypatch.setattr(hf_module, "_CACHED_HF_MODEL_DIR", None)
+    monkeypatch.setattr(hf_module, "_CACHED_HF_DEVICE", None)
+
+    result = predict_ad_hf("Selling a bank account without KYC")
+
+    assert result["available"] is True
+    assert result["risk_label"] in {"Safe", "High Risk"}
+    assert result["class_probabilities"] is not None
+    assert result["token_count"] <= 128
+    assert hf_module._CACHED_HF_DEVICE == "cpu"
+    assert torch.cuda.is_available() is False or hf_module._CACHED_HF_DEVICE in {"cpu", "cuda"}
+    status = get_hf_model_status()
+    assert status["available"] is True
+    assert status["metrics_verified"] is False
+    assert status["metrics_status"] == "historical or unverified"
 
 
 def test_predict_ad_hf_empty_input():

@@ -6,16 +6,8 @@ and download sanitized CSV exports protected against spreadsheet formula injecti
 """
 
 import streamlit as st
-import pandas as pd
 
 from config import APP_NAME
-from src.csv_analyzer import validate_csv, run_batch_analysis, export_safe_csv, MAX_ROWS, MAX_SIZE_MB
-from src.database import init_db
-from src.sample_data import seed_demo_data
-from src.ui_components import (
-    inject_global_css, render_sidebar, render_demo_banner,
-    render_disclaimer, render_risk_badge, render_ml_badge,
-)
 
 # ── Page Config ────────────────────────────────────────────────────────
 st.set_page_config(
@@ -28,6 +20,16 @@ st.set_page_config(
 from src.auth import require_authenticated_user
 if not require_authenticated_user():
     st.stop()
+
+import pandas as pd
+
+from src.csv_analyzer import validate_csv, run_batch_analysis, export_safe_csv, MAX_ROWS, MAX_SIZE_MB
+from src.database import init_db
+from src.sample_data import seed_demo_data
+from src.ui_components import (
+    inject_global_css, render_sidebar, render_demo_banner,
+    render_disclaimer, render_risk_badge, render_ml_badge,
+)
 
 init_db()
 seed_demo_data()

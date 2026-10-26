@@ -259,6 +259,62 @@ def test_evidence_presence_on_match():
         assert len(ev) > 5
 
 
+def test_ocr_recruitment_ad_matches_actual_financial_threat_indicators():
+    text = (
+        "Guaranteed earnings of ₹10,000–₹25,000 per month. Use your personal bank account to receive "
+        "and forward payments. Send bank account number, IFSC, OTP, and KYC documents. "
+        "Pay ₹1,499 activation bonus/fee. Limited seats - avoid contacting the bank."
+    )
+    result = analyze_ad(text)
+
+    assert result["risk_score"] > 0
+    assert CAT_ACCOUNT_RENTAL in result["matched_categories"]
+    assert CAT_SUSPICIOUS_SOLICITATION in result["matched_categories"]
+    assert CAT_URGENCY_SECRECY in result["matched_categories"]
+    assert any("personal bank account" in item.lower() for item in result["evidence"])
+    assert any("otp" in item.lower() for item in result["evidence"])
+    assert any("activation" in item.lower() for item in result["evidence"])
+    assert any("guaranteed earnings" in item.lower() for item in result["evidence"])
+    assert len(result["evidence"]) == len(set(result["evidence"]))
+
+
+def test_ocr_spacing_and_punctuation_variants_are_normalized():
+    text = (
+        "GUARANTEED EARNINGS OF Rs. 10,000 - 25,000 PER MONTH\n"
+        "Use   your   personal   bank   account to receive and forward payments.\n"
+        "Requests for bank account number, IFSC, OTP and KYC documents.\n"
+        "Pay 1499 activation bonus/fee; limited seats; avoid contacting the bank."
+    )
+    result = analyze_ad(text)
+
+    assert result["risk_score"] > 0
+    assert result["matched_categories"]
+    assert any("receive or forward" in item.lower() for item in result["evidence"])
+
+
+def test_legitimate_security_notice_does_not_trigger_credential_solicitation():
+    text = (
+        "Bank security notice: Your OTP is 123456 and valid for 10 minutes. "
+        "Never share your OTP, PIN, password, account number, or KYC documents. "
+        "Contact the bank through the official branch or app if you did not request it."
+    )
+    result = analyze_ad(text)
+
+    assert result["risk_score"] < 25
+    assert result["review_required"] is False
+
+
+def test_legitimate_financial_awareness_notice_does_not_trigger_account_rental():
+    text = (
+        "Financial awareness notice: Never rent or lend your personal bank account. "
+        "Money mule recruitment can cause account closure. Banks will never ask for OTPs. "
+        "Report suspicious transfer requests to the official bank."
+    )
+    result = analyze_ad(text)
+
+    assert result["risk_score"] < 25
+
+
 # ── 17. Same Input Returns the Same Result (Deterministic) ────────────
 
 def test_deterministic_output():

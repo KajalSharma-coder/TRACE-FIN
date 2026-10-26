@@ -227,6 +227,100 @@ section[data-testid="stSidebar"] .sidebar-model-note {{ color:#758b99; font-size
     border-radius: 8px;
     overflow: hidden;
 }}
+
+/* ── Investigator workspace polish ─────────────────────────────────────── */
+:root {{
+    --trace-bg: #07111d;
+    --trace-surface: #0d1b2a;
+    --trace-surface-raised: #122337;
+    --trace-line: rgba(132, 166, 188, .18);
+    --trace-cyan: #28d7cf;
+    --trace-muted: #8ea5b6;
+}}
+
+html, body, [class*="css"] {{
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+.stApp {{
+    background: var(--trace-bg);
+    background-image: radial-gradient(circle at 92% -12%, rgba(40, 215, 207, .09), transparent 30%),
+                      linear-gradient(180deg, rgba(255,255,255,.012), transparent 30%);
+}}
+.block-container {{
+    max-width: 1500px;
+    padding: 2.35rem clamp(1rem, 3vw, 3rem) 4rem;
+}}
+[data-testid="stMainBlockContainer"] > div:first-child {{ gap: 1.15rem; }}
+h1, h2, h3 {{ letter-spacing: -.025em; }}
+h1 {{ font-size: clamp(1.7rem, 2.6vw, 2.35rem) !important; font-weight: 760 !important; }}
+h2 {{ font-weight: 700 !important; }}
+[data-testid="stCaptionContainer"] {{ color: var(--trace-muted); }}
+
+/* Give standard Streamlit controls a shared control language. */
+div[data-baseweb="input"], div[data-baseweb="textarea"], div[data-baseweb="select"] > div,
+div[data-testid="stFileUploaderDropzone"] {{
+    background: rgba(10, 26, 42, .82) !important;
+    border-color: var(--trace-line) !important;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
+}}
+div[data-baseweb="input"]:focus-within, div[data-baseweb="textarea"]:focus-within,
+div[data-baseweb="select"] > div:focus-within {{
+    border-color: rgba(40, 215, 207, .8) !important;
+    box-shadow: 0 0 0 1px rgba(40, 215, 207, .25), 0 0 20px rgba(40, 215, 207, .06) !important;
+}}
+label[data-testid="stWidgetLabel"] p {{ color: #c6d6df; font-size: .82rem; font-weight: 620; }}
+div.stButton > button, div.stFormSubmitButton > button {{
+    min-height: 2.75rem;
+    padding-inline: 1rem;
+    background: rgba(17, 40, 59, .75);
+    color: #d9f4f2;
+    box-shadow: 0 5px 16px rgba(0,0,0,.12);
+}}
+div.stButton > button:hover, div.stFormSubmitButton > button:hover {{
+    background: rgba(28, 73, 88, .85);
+    transform: translateY(-1px);
+}}
+div.stButton > button:focus-visible, div.stFormSubmitButton > button:focus-visible,
+button:focus-visible, a:focus-visible {{ outline: 2px solid var(--trace-cyan); outline-offset: 2px; }}
+button[kind="primary"] {{
+    background: linear-gradient(135deg, #13b9b1, #168eaa) !important;
+    border-color: rgba(96, 240, 229, .75) !important;
+    color: #03131b !important;
+}}
+
+/* Tabs read as a compact investigation toolbar. */
+button[data-baseweb="tab"] {{
+    color: #8fa8b8;
+    font-weight: 620;
+    padding: .7rem 1rem;
+}}
+button[data-baseweb="tab"][aria-selected="true"] {{ color: #cffff9; }}
+div[data-baseweb="tab-highlight"] {{ background: var(--trace-cyan); height: 2px; }}
+div[data-baseweb="tab-border"] {{ background: var(--trace-line); }}
+
+/* Surface the existing cards and report areas without changing their content. */
+.metric-card, .card, .result-panel {{
+    background: linear-gradient(145deg, rgba(17, 37, 55, .94), rgba(9, 25, 40, .94));
+    border-color: var(--trace-line);
+    box-shadow: 0 12px 30px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.018);
+}}
+.metric-card {{ position: relative; overflow: hidden; min-height: 118px; padding: 1.25rem 1.35rem; }}
+.metric-card::after {{
+    content: ""; position: absolute; inset: auto 0 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--trace-cyan), transparent); opacity: .7;
+}}
+.metric-value {{ font-variant-numeric: tabular-nums; letter-spacing: -.04em; }}
+.section-header {{
+    margin-top: 1.8rem;
+    color: #d9e8ef;
+    font-size: .78rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    border-bottom-color: var(--trace-line);
+}}
+div[data-testid="stExpander"] {{ background: rgba(12, 29, 45, .58); box-shadow: 0 8px 24px rgba(0,0,0,.1); }}
+div[data-testid="stAlert"] {{ border-radius: 10px; border-width: 1px; }}
+.stDataFrame {{ border: 1px solid var(--trace-line); box-shadow: 0 12px 28px rgba(0,0,0,.12); }}
 </style>
 """
 
@@ -322,8 +416,10 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
         if not tfidf_loaded or not hf_status.get("available"):
+            hf_reason = hf_status.get("error") or hf_status.get("status") or "status unavailable"
             st.markdown(
-                '<div class="sidebar-model-note">One or more statistical models are unavailable; results show this in engine status.</div>',
+                f'<div class="sidebar-model-note">DistilBERT unavailable: {escape(str(hf_reason))}. '
+                'Rule-based and TF-IDF analysis continue independently; no substitute transformer score is used.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -518,6 +614,8 @@ def render_disclaimer() -> None:
 
 def render_record_detail(record: dict) -> None:
     """Display a full record detail panel with explainable evidence and extracted indicators."""
+    from src.recommendations import get_case_recommendation
+
     st.markdown(f'<div class="result-header">Case Record: {record["record_id"]}</div>',
                 unsafe_allow_html=True)
 
@@ -544,10 +642,7 @@ def render_record_detail(record: dict) -> None:
                     unsafe_allow_html=True)
 
     # Review Recommendation
-    rec = record.get("review_recommendation") or (
-        "Investigator Review Recommended" if record.get("review_required")
-        else "No Immediate Review Indicated"
-    )
+    rec = get_case_recommendation(record)
     is_req = record.get("review_required")
     risk_lvl = record.get("risk_level", "Low").capitalize()
     if risk_lvl == "Critical":
@@ -564,7 +659,7 @@ def render_record_detail(record: dict) -> None:
     st.markdown(
         f"""
         <div style="background: {bg_color}; border: 1px solid {border_color}; border-radius: 6px; padding: 0.8rem 1rem; margin: 0.8rem 0; color: {text_color}; font-size: 0.88rem;">
-            <strong>{icon} Review Recommendation:</strong> {rec}
+            <strong>{icon} Recommended next step:</strong> {rec}
         </div>
         """,
         unsafe_allow_html=True,

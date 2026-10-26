@@ -373,6 +373,25 @@ python scripts/train_model.py
 python scripts/train_hf_model.py --epochs 3 --batch-size 8 --lr 2e-5
 ```
 
+On Windows PowerShell, if `models/hf_financial_ad_classifier/` is missing
+`model.safetensors` or `pytorch_model.bin`, local DistilBERT inference remains
+unavailable until the fine-tuned checkpoint is restored or retrained. The
+application does not download weights during inference. Retrain locally with:
+
+```powershell
+.venv\Scripts\python.exe scripts\train_hf_model.py --epochs 3 --batch-size 8 --lr 2e-5 --device cpu
+```
+
+The training command backs up an existing model directory before saving a new
+checkpoint. Verify readiness without running inference:
+
+```powershell
+.venv\Scripts\python.exe -c "from src.hf_model import get_hf_model_status; print(get_hf_model_status())"
+```
+
+Only a checkpoint with valid `Safe=0` / `High Risk=1` labels and metadata that
+verifies the financial-ad classification task is treated as available.
+
 #### 3. Train and validation-select the sourced scam-message candidate
 ```bash
 python scripts/train_expanded_model.py

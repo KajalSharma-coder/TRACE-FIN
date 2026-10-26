@@ -7,8 +7,10 @@ import hashlib
 import os
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterator
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
@@ -40,10 +42,21 @@ def _connect(db_path: str | Path | None = None) -> sqlite3.Connection:
         raise AuthStoreError("Local account storage is unavailable.") from exc
 
 
+@contextmanager
+def _connection(db_path: str | Path | None = None) -> Iterator[sqlite3.Connection]:
+    """Provide a transactional connection that is always closed."""
+    conn = _connect(db_path)
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
+
+
 def init_auth_store(db_path: str | Path | None = None) -> None:
     """Create the local account table without touching analysis data."""
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS local_users (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +101,7 @@ def create_user(name: str, email: str, password: str, confirmation: str,
     normalized_email = validate_signup(name, email, password, confirmation)
     init_auth_store(db_path)
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             cursor = conn.execute(
                 "INSERT INTO local_users (name, email, password_hash) VALUES (?, ?, ?)",
                 (name.strip(), normalized_email, _PASSWORDS.hash(password)),
@@ -105,7 +118,7 @@ def authenticate_user(email: str, password: str,
     """Return safe session identity fields, or None for any invalid credentials."""
     init_auth_store(db_path)
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             row = conn.execute(
                 "SELECT id, name, email, password_hash FROM local_users WHERE email = ?",
                 ((email or "").strip().casefold(),),
@@ -125,7 +138,7 @@ def get_user_by_id(user_id: int, db_path: str | Path | None = None) -> dict | No
     """Revalidate a Streamlit session against the local account store."""
     init_auth_store(db_path)
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             row = conn.execute(
                 "SELECT id, name, email FROM local_users WHERE id = ?", (user_id,)
             ).fetchone()
@@ -141,7 +154,7 @@ def create_auth_session(user_id: int, db_path: str | Path | None = None) -> str:
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     expires = (datetime.now(timezone.utc) + timedelta(days=AUTH_SESSION_DAYS)).isoformat()
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             conn.execute("INSERT INTO local_auth_sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
                          (digest, user_id, expires))
         return token
@@ -156,7 +169,7 @@ def get_user_by_auth_session(token: str, db_path: str | Path | None = None) -> d
     init_auth_store(db_path)
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             row = conn.execute(
                 """SELECT u.id,u.name,u.email FROM local_auth_sessions s
                    JOIN local_users u ON u.id=s.user_id
@@ -173,7 +186,7 @@ def revoke_auth_session(token: str | None, db_path: str | Path | None = None) ->
         return
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             conn.execute("DELETE FROM local_auth_sessions WHERE token_hash=?", (digest,))
     except sqlite3.Error as exc:
         raise AuthStoreError("Local account storage is unavailable.") from exc
@@ -270,7 +283,7 @@ def password_hash_for_testing(email: str, db_path: str | Path | None = None) -> 
     """Internal inspection helper for tests; never expose hashes in the UI."""
     init_auth_store(db_path)
     try:
-        with _connect(db_path) as conn:
+        with _connection(db_path) as conn:
             row = conn.execute("SELECT password_hash FROM local_users WHERE email = ?",
                                (email.strip().casefold(),)).fetchone()
         return row[0] if row else None

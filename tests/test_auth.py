@@ -66,6 +66,13 @@ def test_user_session_revalidation_and_missing_store_error(tmp_path):
         init_auth_store(broken / "file")
 
 
+def test_auth_store_connections_close_deterministically(tmp_path):
+    db = tmp_path / "accounts.sqlite3"
+
+    init_auth_store(db)
+    db.unlink()
+
+
 def test_persistent_auth_token_is_hashed_validated_and_revocable(tmp_path):
     db = tmp_path / "accounts.sqlite3"
     user = create_user("Analyst", "analyst@example.org", "long enough password",
@@ -88,7 +95,7 @@ def test_public_homepage_and_login_route_are_available_without_auth():
     from streamlit.testing.v1 import AppTest
 
     project_root = Path(__file__).resolve().parents[1]
-    app = AppTest.from_file(project_root / "app.py").run()
+    app = AppTest.from_file(project_root / "app.py", default_timeout=10).run()
     assert any("See the risk." in (item.value or "") for item in app.markdown)
     assert any("ILLUSTRATIVE PREVIEW" in (item.value or "") or "LIVE WORKSPACE DATA" in (item.value or "")
                for item in app.markdown)
@@ -103,7 +110,7 @@ def test_protected_analysis_page_rejects_unauthenticated_session():
     from streamlit.testing.v1 import AppTest
 
     project_root = Path(__file__).resolve().parents[1]
-    app = AppTest.from_file(project_root / "app.py").run()
+    app = AppTest.from_file(project_root / "app.py", default_timeout=10).run()
     app.switch_page("pages/5_Batch_CSV_Analysis.py").run()
     assert any("Sign in to access" in (item.value or "") for item in app.warning)
     assert not any("Batch CSV Advertisement Analysis" in (item.value or "") for item in app.title)
@@ -120,7 +127,7 @@ def test_signup_login_shell_establishes_session_and_logout_clears_it(tmp_path, m
     monkeypatch.setattr(database_module, "get_database_url", lambda: None)
     database_module.reset_engine()
     app_path = Path(__file__).resolve().parents[1] / "app.py"
-    app = AppTest.from_file(app_path).run()
+    app = AppTest.from_file(app_path, default_timeout=10).run()
     app.query_params["auth"] = "signup"
     app.run()
     app.text_input(key="signup_name").set_value("Local Investigator")

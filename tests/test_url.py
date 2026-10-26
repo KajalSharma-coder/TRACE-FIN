@@ -348,16 +348,26 @@ def test_dns_failure_is_not_presented_as_a_suspicious_url_verdict():
 
 
 def test_legitimate_vs_suspicious_url_content():
-    """Verify legitimate banking disclosures score LOW RISK while fraud solicitation scores HIGH RISK."""
+    """Verify legitimate mitigation and suspicious URL-content verdicts deterministically."""
     legit_text = (
         "Personal Loan Offers - Low Interest Rates. Apply for pre-approved personal loans "
         "with nominal processing fee applicable as per bank terms. Competitive annual interest rates."
     )
-    legit_res = run_unified_analysis(
-        text=legit_text,
-        source_type="Website URL",
-        source_metadata={"final_url": "https://secure-bank.example.com/loans"},
-    )
+    # Explicitly exercise the mitigation branch: one statistical engine flags
+    # the vocabulary while the other is safe. This must not depend on optional
+    # local DistilBERT weights being present in the test environment.
+    with patch(
+        "src.analysis_service.predict_ad_ml",
+        return_value={"available": True, "risk_label": "Safe", "confidence": 0.90},
+    ), patch(
+        "src.analysis_service.predict_ad_hf",
+        return_value={"available": True, "risk_label": "High Risk", "confidence": 0.85},
+    ):
+        legit_res = run_unified_analysis(
+            text=legit_text,
+            source_type="Website URL",
+            source_metadata={"final_url": "https://secure-bank.example.com/loans"},
+        )
     assert legit_res["final_verdict"] == "LOW RISK"
     assert legit_res["final_score"] == 0
     assert legit_res["consensus_status"] == "Mitigated Legitimate Content"
@@ -366,11 +376,18 @@ def test_legitimate_vs_suspicious_url_content():
         "Urgent! Current Bank Accounts for Sale. Instant delivery of fully activated accounts with debit card, "
         "net banking kit, and OTP bypass. Contact Telegram @mulevendor"
     )
-    suspicious_res = run_unified_analysis(
-        text=suspicious_text,
-        source_type="Website URL",
-        source_metadata={"final_url": "https://mule-accounts.example.biz/buy"},
-    )
+    with patch(
+        "src.analysis_service.predict_ad_ml",
+        return_value={"available": True, "risk_label": "High Risk", "confidence": 0.95},
+    ), patch(
+        "src.analysis_service.predict_ad_hf",
+        return_value={"available": True, "risk_label": "High Risk", "confidence": 0.96},
+    ):
+        suspicious_res = run_unified_analysis(
+            text=suspicious_text,
+            source_type="Website URL",
+            source_metadata={"final_url": "https://mule-accounts.example.biz/buy"},
+        )
     assert suspicious_res["final_verdict"] == "HIGH RISK"
     assert suspicious_res["final_score"] >= 75
     assert suspicious_res["review_required"] is True

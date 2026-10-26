@@ -1,8 +1,5 @@
 """TRACE//FIN entry point: local authentication and investigator dashboard."""
 
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
 from config import APP_NAME, APP_TAGLINE, APP_CATEGORY, COLORS, RISK_LEVELS, STANDARDIZED_RISK_TIERS
@@ -329,6 +326,10 @@ if identity is None:
     st.stop()
 
 snapshot, db_error = load_dashboard_snapshot(_load_records)
+
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 render_sidebar()
 st.title("Overview dashboard")
